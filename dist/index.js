@@ -13046,7 +13046,7 @@ var require_fetch = __commonJS({
         this.emit("terminated", error2);
       }
     };
-    function fetch(input, init = {}) {
+    function fetch2(input, init = {}) {
       webidl.argumentLengthCheck(arguments, 1, { header: "globalThis.fetch" });
       const p = createDeferredPromise();
       let requestObject;
@@ -13976,7 +13976,7 @@ var require_fetch = __commonJS({
       }
     }
     module2.exports = {
-      fetch,
+      fetch: fetch2,
       Fetch,
       fetching,
       finalizeAndReportTiming
@@ -17232,7 +17232,7 @@ var require_undici = __commonJS({
     module2.exports.getGlobalDispatcher = getGlobalDispatcher;
     if (util.nodeMajor > 16 || util.nodeMajor === 16 && util.nodeMinor >= 8) {
       let fetchImpl = null;
-      module2.exports.fetch = async function fetch(resource) {
+      module2.exports.fetch = async function fetch2(resource) {
         if (!fetchImpl) {
           fetchImpl = require_fetch().fetch;
         }
@@ -20744,16 +20744,16 @@ var require_dist_node7 = __commonJS({
       let headers = {};
       let status;
       let url;
-      let { fetch } = globalThis;
+      let { fetch: fetch2 } = globalThis;
       if ((_b = requestOptions.request) == null ? void 0 : _b.fetch) {
-        fetch = requestOptions.request.fetch;
+        fetch2 = requestOptions.request.fetch;
       }
-      if (!fetch) {
+      if (!fetch2) {
         throw new Error(
           "fetch is not set. Please pass a fetch implementation as new Octokit({ request: { fetch }}). Learn more at https://github.com/octokit/octokit.js/#fetch-missing"
         );
       }
-      return fetch(requestOptions.url, {
+      return fetch2(requestOptions.url, {
         method: requestOptions.method,
         body: requestOptions.body,
         redirect: (_c = requestOptions.request) == null ? void 0 : _c.redirect,
@@ -24519,8 +24519,8 @@ function isPlainObject2(value) {
   return typeof Ctor === "function" && Ctor instanceof Ctor && Function.prototype.call(Ctor) === Function.prototype.call(value);
 }
 async function fetchWrapper(requestOptions) {
-  const fetch = requestOptions.request?.fetch || globalThis.fetch;
-  if (!fetch) {
+  const fetch2 = requestOptions.request?.fetch || globalThis.fetch;
+  if (!fetch2) {
     throw new Error(
       "fetch is not set. Please pass a fetch implementation as new Octokit({ request: { fetch }}). Learn more at https://github.com/octokit/octokit.js/#fetch-missing"
     );
@@ -24536,7 +24536,7 @@ async function fetchWrapper(requestOptions) {
   );
   let fetchResponse;
   try {
-    fetchResponse = await fetch(requestOptions.url, {
+    fetchResponse = await fetch2(requestOptions.url, {
       method: requestOptions.method,
       body,
       redirect: requestOptions.request?.redirect,
@@ -27616,7 +27616,8 @@ function routeEvent(rawMessage, modelTier) {
     reason,
     normalizedMessage: normalized,
     maxContextTokens: 1e4,
-    commitExpected: false
+    commitExpected: false,
+    source: "rules"
   });
   if (!normalized) {
     return { ...base("needs-input", "ask-clarification", "empty mention", 0.99), maxContextTokens: 0 };
@@ -27664,6 +27665,107 @@ function routeEvent(rawMessage, modelTier) {
     estimatedCostUsd: modelTier === "haiku" ? 0.01 : modelTier === "sonnet" ? 0.06 : 0.25,
     maxContextTokens: 15e3
   };
+}
+var ROUTER_INTENTS = [
+  "ignore",
+  "stop",
+  "meta-template",
+  "needs-input",
+  "simple-answer",
+  "review",
+  "write-fix",
+  "commit-write",
+  "job-candidate",
+  "alert",
+  "spam-abuse",
+  "unsupported"
+];
+var ROUTER_DECISIONS = [
+  "ignore",
+  "stop",
+  "reply-template",
+  "ask-clarification",
+  "call-model"
+];
+var LocalRouterUnavailableError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LocalRouterUnavailableError";
+  }
+};
+function parseLocalRouterPayload(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!ROUTER_INTENTS.includes(parsed.intent)) return null;
+    if (!ROUTER_DECISIONS.includes(parsed.decision)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function localRouterPrompt(message) {
+  return [
+    "Classify this GitHub PR comment for Kai, a development-only engineering bot.",
+    "Return JSON only with keys: intent, decision, confidence, reason, maxContextTokens, commitExpected.",
+    "Allowed intents: simple-answer, review, write-fix, commit-write, job-candidate, alert, spam-abuse, unsupported.",
+    "Allowed decisions: reply-template, ask-clarification, call-model.",
+    "Never return stop, ignore, meta-template, or needs-input. Those are handled before this classifier.",
+    "Off-topic non-development requests must be spam-abuse + reply-template.",
+    "Imperative development changes must be write-fix or commit-write + call-model + commitExpected true.",
+    "Questions asking if something can/should be done should be simple-answer + call-model + commitExpected false.",
+    `Comment: ${JSON.stringify(message)}`
+  ].join("\n");
+}
+async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
+  const rules = routeEvent(rawMessage, modelTier);
+  if (["stop", "meta-template", "needs-input", "spam-abuse"].includes(rules.intent)) return rules;
+  const url = options?.url ?? process.env.KAI_ROUTER_URL;
+  if (!url) {
+    if (options?.allowRulesOnly) return rules;
+    throw new LocalRouterUnavailableError("local router URL is required before paid model calls");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 1500);
+  try {
+    const res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "gemma-4-E2B-it",
+        messages: [{ role: "user", content: localRouterPrompt(rules.normalizedMessage) }],
+        stream: false,
+        temperature: 0,
+        max_tokens: 160,
+        response_format: { type: "json_object" }
+      }),
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      throw new LocalRouterUnavailableError(`local router returned HTTP ${res.status}`);
+    }
+    const body = await res.json();
+    const content = body.choices?.[0]?.message?.content ?? "";
+    const local = parseLocalRouterPayload(content);
+    if (!local) {
+      throw new LocalRouterUnavailableError("local router returned invalid JSON classification");
+    }
+    return {
+      ...rules,
+      intent: local.intent,
+      decision: local.decision,
+      confidence: Math.max(0, Math.min(1, Number(local.confidence ?? 0.7))),
+      reason: `local-llm: ${local.reason ?? "classified"}`,
+      maxContextTokens: Number(local.maxContextTokens ?? rules.maxContextTokens),
+      commitExpected: rules.commitExpected || Boolean(local.commitExpected),
+      source: "local-llm"
+    };
+  } catch (error2) {
+    if (error2 instanceof LocalRouterUnavailableError) throw error2;
+    const message = error2 instanceof Error ? error2.message : String(error2);
+    throw new LocalRouterUnavailableError(`local router request failed: ${message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // src/templates.ts
@@ -28158,6 +28260,8 @@ async function run() {
     const trigger = core.getInput("trigger_phrase") || "@kai";
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");
+    const routerUrl = core.getInput("router_url") || process.env.KAI_ROUTER_URL;
+    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "gemma4:e2b";
     const { context: context2 } = github;
     const event = context2.eventName;
     let commentBody = "", commentId = 0, issueNumber = 0;
@@ -28176,7 +28280,11 @@ async function run() {
     rawMessage = commentBody.slice(idx + trigger.length).trim();
     const { model: modelTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
     const selectedModel = MODELS[modelTier];
-    const route = routeEvent(userMessage, modelTier);
+    const route = await routeEventWithLocalLLM(userMessage, modelTier, {
+      url: routerUrl,
+      model: routerModel,
+      timeoutMs: 5e3
+    });
     core.info(`Triggered by @${sender} in #${issueNumber}`);
     core.info(`Router: ${route.intent} -> ${route.decision} (${route.reason}, confidence ${route.confidence})`);
     const auditDb = initAuditDb();

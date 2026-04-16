@@ -1,0 +1,51 @@
+services:
+  kai-router-llm:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    restart: unless-stopped
+    ports:
+      - "${KAI_ROUTER_PORT:-11434}:8080"
+    volumes:
+      - kai-router-gguf:/models
+    command:
+      - -m
+      - /models/${KAI_ROUTER_GGUF:-gemma-4-E2B-it-Q4_K_M.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "4096"
+      - --jinja
+      - --reasoning
+      - "off"
+      - --reasoning-budget
+      - "0"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+
+  kai-router-pull:
+    image: alpine:latest
+    volumes:
+      - kai-router-gguf:/models
+    environment:
+      KAI_ROUTER_HF_REPO: ${KAI_ROUTER_HF_REPO:-unsloth/gemma-4-E2B-it-GGUF}
+      KAI_ROUTER_GGUF: ${KAI_ROUTER_GGUF:-gemma-4-E2B-it-Q4_K_M.gguf}
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        apk add -q curl
+        if [ ! -f "/models/$${KAI_ROUTER_GGUF}" ]; then
+          echo "Downloading $${KAI_ROUTER_GGUF} from $${KAI_ROUTER_HF_REPO}..."
+          curl -fL -o "/models/$${KAI_ROUTER_GGUF}" \
+            "https://huggingface.co/$${KAI_ROUTER_HF_REPO}/resolve/main/$${KAI_ROUTER_GGUF}"
+        fi
+        ls -lh /models/
+    restart: "no"
+
+volumes:
+  kai-router-gguf:

@@ -4,7 +4,7 @@ import { Octokit } from "@octokit/rest";
 import { execSync, spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
-import { isMetaQuestion, routeEvent, shouldVerifyCommit, type RouterDecision } from "./router";
+import { isMetaQuestion, routeEventWithLocalLLM, shouldVerifyCommit, type RouterDecision } from "./router";
 import { templateForRoute } from "./templates";
 
 // --- Audit DB (SQLite, persistent via Docker volume) ---
@@ -545,6 +545,8 @@ async function run() {
     const trigger = core.getInput("trigger_phrase") || "@kai";
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");
+    const routerUrl = core.getInput("router_url") || process.env.KAI_ROUTER_URL;
+    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "gemma4:e2b";
 
     const { context } = github;
     const event = context.eventName;
@@ -571,7 +573,11 @@ async function run() {
     rawMessage = commentBody.slice(idx + trigger.length).trim();
     const { model: modelTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
     const selectedModel = MODELS[modelTier];
-    const route = routeEvent(userMessage, modelTier);
+    const route = await routeEventWithLocalLLM(userMessage, modelTier, {
+      url: routerUrl,
+      model: routerModel,
+      timeoutMs: 5000,
+    });
 
     core.info(`Triggered by @${sender} in #${issueNumber}`);
     core.info(`Router: ${route.intent} -> ${route.decision} (${route.reason}, confidence ${route.confidence})`);

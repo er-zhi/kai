@@ -14,6 +14,7 @@ export type RouterDecision = {
   normalizedMessage: string;
   maxContextTokens: number;
   commitExpected: boolean;
+  source?: "rules" | "local-llm";
 };
 
 const OFFTOPIC_PATTERNS = [
@@ -54,6 +55,7 @@ export function routeEvent(rawMessage: string, modelTier: string): RouterDecisio
     normalizedMessage: normalized,
     maxContextTokens: 10_000,
     commitExpected: false,
+    source: "rules",
   });
 
   if (!normalized) {
@@ -111,4 +113,116 @@ export function routeEvent(rawMessage: string, modelTier: string): RouterDecisio
     estimatedCostUsd: modelTier === "haiku" ? 0.01 : modelTier === "sonnet" ? 0.06 : 0.25,
     maxContextTokens: 15_000,
   };
+}
+
+const ROUTER_INTENTS: RouterIntent[] = [
+  "ignore", "stop", "meta-template", "needs-input", "simple-answer",
+  "review", "write-fix", "commit-write", "job-candidate",
+  "alert", "spam-abuse", "unsupported",
+];
+
+const ROUTER_DECISIONS: RouterDecision["decision"][] = [
+  "ignore", "stop", "reply-template", "ask-clarification", "call-model",
+];
+
+type LocalRouterPayload = {
+  intent?: RouterIntent;
+  decision?: RouterDecision["decision"];
+  confidence?: number;
+  reason?: string;
+  maxContextTokens?: number;
+  commitExpected?: boolean;
+};
+
+export class LocalRouterUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LocalRouterUnavailableError";
+  }
+}
+
+function parseLocalRouterPayload(raw: string): LocalRouterPayload | null {
+  try {
+    const parsed = JSON.parse(raw) as LocalRouterPayload;
+    if (!ROUTER_INTENTS.includes(parsed.intent as RouterIntent)) return null;
+    if (!ROUTER_DECISIONS.includes(parsed.decision as RouterDecision["decision"])) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function localRouterPrompt(message: string): string {
+  return [
+    "Classify this GitHub PR comment for Kai, a development-only engineering bot.",
+    "Return JSON only with keys: intent, decision, confidence, reason, maxContextTokens, commitExpected.",
+    "Allowed intents: simple-answer, review, write-fix, commit-write, job-candidate, alert, spam-abuse, unsupported.",
+    "Allowed decisions: reply-template, ask-clarification, call-model.",
+    "Never return stop, ignore, meta-template, or needs-input. Those are handled before this classifier.",
+    "Off-topic non-development requests must be spam-abuse + reply-template.",
+    "Imperative development changes must be write-fix or commit-write + call-model + commitExpected true.",
+    "Questions asking if something can/should be done should be simple-answer + call-model + commitExpected false.",
+    `Comment: ${JSON.stringify(message)}`,
+  ].join("\n");
+}
+
+export async function routeEventWithLocalLLM(
+  rawMessage: string,
+  modelTier: string,
+  options?: { url?: string; model?: string; timeoutMs?: number; allowRulesOnly?: boolean },
+): Promise<RouterDecision> {
+  const rules = routeEvent(rawMessage, modelTier);
+
+  // Hard control/no-token paths stay deterministic and never need an LLM.
+  if (["stop", "meta-template", "needs-input", "spam-abuse"].includes(rules.intent)) return rules;
+
+  const url = options?.url ?? process.env.KAI_ROUTER_URL;
+  if (!url) {
+    if (options?.allowRulesOnly) return rules;
+    throw new LocalRouterUnavailableError("local router URL is required before paid model calls");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 1500);
+  try {
+    const res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "gemma-4-E2B-it",
+        messages: [{ role: "user", content: localRouterPrompt(rules.normalizedMessage) }],
+        stream: false,
+        temperature: 0,
+        max_tokens: 160,
+        response_format: { type: "json_object" },
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new LocalRouterUnavailableError(`local router returned HTTP ${res.status}`);
+    }
+    const body = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = body.choices?.[0]?.message?.content ?? "";
+    const local = parseLocalRouterPayload(content);
+    if (!local) {
+      throw new LocalRouterUnavailableError("local router returned invalid JSON classification");
+    }
+
+    return {
+      ...rules,
+      intent: local.intent as RouterIntent,
+      decision: local.decision as RouterDecision["decision"],
+      confidence: Math.max(0, Math.min(1, Number(local.confidence ?? 0.7))),
+      reason: `local-llm: ${local.reason ?? "classified"}`,
+      maxContextTokens: Number(local.maxContextTokens ?? rules.maxContextTokens),
+      commitExpected: rules.commitExpected || Boolean(local.commitExpected),
+      source: "local-llm",
+    };
+  } catch (error) {
+    if (error instanceof LocalRouterUnavailableError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new LocalRouterUnavailableError(`local router request failed: ${message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
 }

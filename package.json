@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js --format=cjs",
-    "test:router": "esbuild tests/router.test.ts --bundle --platform=node --target=node20 --format=cjs --outfile=/tmp/kai-router.test.cjs && esbuild tests/templates.test.ts --bundle --platform=node --target=node20 --format=cjs --outfile=/tmp/kai-templates.test.cjs && node --test /tmp/kai-router.test.cjs /tmp/kai-templates.test.cjs",
+    "test:router": "esbuild tests/router.test.ts --bundle --platform=node --target=node20 --format=cjs --outfile=/tmp/kai-router.test.cjs && esbuild tests/templates.test.ts --bundle --platform=node --target=node20 --format=cjs --outfile=/tmp/kai-templates.test.cjs && esbuild tests/router-local-llm.test.ts --bundle --platform=node --target=node20 --format=cjs --outfile=/tmp/kai-router-local-llm.test.cjs && node --test /tmp/kai-router.test.cjs /tmp/kai-templates.test.cjs /tmp/kai-router-local-llm.test.cjs",
+    "test:router:live": "esbuild tests/router-live-llm.test.ts --bundle --platform=node --target=node20 --format=cjs --outfile=/tmp/kai-router-live-llm.test.cjs && node --test /tmp/kai-router-live-llm.test.cjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

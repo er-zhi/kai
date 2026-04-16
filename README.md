@@ -45,7 +45,22 @@ jobs:
         with:
           github_token: ${{ steps.kai-token.outputs.token }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          router_url: http://localhost:11434
+          router_model: gemma4:e2b
 ```
+
+## Local Router LLM
+
+Kai requires a local Ollama router before any paid model call. If the router is not available or returns an invalid classification, Kai fails closed and does not call Claude.
+
+On the EC2 self-hosted runner:
+
+```bash
+docker compose -f docker-compose.router.yml up -d kai-router-llm
+docker compose -f docker-compose.router.yml run --rm kai-router-pull
+```
+
+Keep `router_url` pointed at `http://localhost:11434`. The required local classifier is `gemma4:e2b`.
 
 ## Usage
 
@@ -65,3 +80,5 @@ Delete Kai's working comment to cancel a running job.
 | `github_token` | Yes | `github.token` | Token for GitHub API |
 | `anthropic_api_key` | No | — | Anthropic API key for Claude |
 | `trigger_phrase` | No | `@kai` | Trigger phrase |
+| `router_url` | No | — | Local Ollama router URL; required before paid model calls |
+| `router_model` | No | `gemma4:e2b` | Local router classifier model |

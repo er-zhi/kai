@@ -14,6 +14,13 @@ inputs:
   anthropic_api_key:
     description: 'Anthropic API key for Claude-powered analysis'
     required: false
+  router_url:
+    description: 'Required local Ollama router URL before any paid model call, for example http://localhost:11434'
+    required: false
+  router_model:
+    description: 'Local Ollama model used for cheap event filtering'
+    required: false
+    default: 'gemma4:e2b'
 
 runs:
   using: 'node24'
