@@ -222,9 +222,11 @@ function buildCLIPrompt(
 
 // Smart max_turns based on task complexity
 function getMaxTurns(message: string, modelTier: string): number {
-  if (modelTier === "opus") return 20;
-  if (modelTier === "sonnet") return 15;
-  // Haiku: simple tasks get fewer turns
+  if (modelTier === "opus") return 25;
+  if (modelTier === "sonnet") return 20;
+  // Haiku: scale by task type
+  const needsWrite = /fix|commit|push|apply|create|patch|refactor/i.test(message);
+  if (needsWrite) return 20; // write tasks need more turns
   const simple = /^(top|list|one-liner|quick|is this|what|summarize)/i.test(message);
   return simple ? 5 : 10;
 }
@@ -247,7 +249,7 @@ const PHASES = [
 
 function spinnerFrame(_tick: number, elapsed: number, _modelLabel: string): string {
   const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
-  return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...\n\n_Delete this comment or send new \`@kai\` to cancel._`;
+  return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...\n\n_Delete this comment to cancel._`;
 }
 
 interface HeartbeatContext {
@@ -374,9 +376,16 @@ function runCLIWithHeartbeat(
           rtkSavings = m ? m[1] + "%" : "";
         } catch { /* */ }
 
+        // Handle error responses (max_turns, etc) — don't show raw JSON
+        let resultText = json.result ?? json.content ?? "";
+        if (!resultText && json.is_error) {
+          resultText = `⚠️ Task incomplete (${json.subtype ?? "error"}): reached ${json.num_turns ?? "?"} turns. Ask me to continue or simplify the request.`;
+        }
+        if (!resultText) resultText = output;
+
         settled = true;
         resolve({
-          text: json.result ?? json.content ?? output,
+          text: resultText,
           costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
           numTurns: json.num_turns ?? 1,
           inputTokens: (json.usage?.input_tokens ?? 0)

@@ -27791,8 +27791,10 @@ ${prCommentsContext}`);
   return parts.filter(Boolean).join("\n");
 }
 function getMaxTurns(message, modelTier) {
-  if (modelTier === "opus") return 20;
-  if (modelTier === "sonnet") return 15;
+  if (modelTier === "opus") return 25;
+  if (modelTier === "sonnet") return 20;
+  const needsWrite = /fix|commit|push|apply|create|patch|refactor/i.test(message);
+  if (needsWrite) return 20;
   const simple = /^(top|list|one-liner|quick|is this|what|summarize)/i.test(message);
   return simple ? 5 : 10;
 }
@@ -27813,7 +27815,7 @@ function spinnerFrame(_tick, elapsed, _modelLabel) {
   const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
   return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...
 
-_Delete this comment or send new \`@kai\` to cancel._`;
+_Delete this comment to cancel._`;
 }
 async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, heartbeat, db, runId) {
   const isRoot = process.getuid?.() === 0;
@@ -27924,9 +27926,14 @@ function runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, hb, db, 
           rtkSavings = m ? m[1] + "%" : "";
         } catch {
         }
+        let resultText = json.result ?? json.content ?? "";
+        if (!resultText && json.is_error) {
+          resultText = `\u26A0\uFE0F Task incomplete (${json.subtype ?? "error"}): reached ${json.num_turns ?? "?"} turns. Ask me to continue or simplify the request.`;
+        }
+        if (!resultText) resultText = output;
         settled = true;
         resolve({
-          text: json.result ?? json.content ?? output,
+          text: resultText,
           costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
           numTurns: json.num_turns ?? 1,
           inputTokens: (json.usage?.input_tokens ?? 0) + (json.usage?.cache_read_input_tokens ?? 0) + (json.usage?.cache_creation_input_tokens ?? 0),
