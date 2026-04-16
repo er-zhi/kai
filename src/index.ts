@@ -209,7 +209,8 @@ function buildCLIPrompt(
     );
   } else {
     parts.push(
-      `Repo checked out. Use git diff origin/main...HEAD and Read to inspect PROJECT code only.`,
+      `PR repo checked out in current dir. Use git diff origin/main...HEAD and Read to inspect PROJECT code only.`,
+      `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context.`,
       `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files — these are bot infrastructure, not project code.`,
       `Task: ${userMessage}`,
       `IMPORTANT: Answer EXACTLY what the user asked. Do NOT default to security review unless explicitly asked.`,
