@@ -27777,6 +27777,36 @@ var HEARTBEAT_INTERVAL_MS = 15e3;
 var CLI_TIMEOUT_MS = 3e5;
 var MAX_CLI_RETRIES = 3;
 var RETRY_DELAYS = [15e3, 3e4, 6e4];
+var SPINNER = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
+var PHASES = [
+  "Reading PR context",
+  "Loading conversation history",
+  "Analyzing code changes",
+  "Running security checks",
+  "Inspecting files",
+  "Preparing response"
+];
+function progressBar(elapsed, maxSec) {
+  const pct = Math.min(elapsed / maxSec, 0.95);
+  const filled = Math.round(pct * 20);
+  return "\u2593".repeat(filled) + "\u2591".repeat(20 - filled);
+}
+function spinnerFrame(tick, elapsed, modelLabel) {
+  const s = SPINNER[tick % SPINNER.length];
+  const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
+  const bar = progressBar(elapsed, CLI_TIMEOUT_MS / 1e3);
+  const min = Math.floor(elapsed / 60);
+  const sec = elapsed % 60;
+  const time = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+  return [
+    `${s} **${phase}...** (${time})`,
+    `\`${bar}\` ${Math.round(elapsed / (CLI_TIMEOUT_MS / 1e3) * 100)}%`,
+    ``,
+    `Model: **${modelLabel}** | Mode: CLI + RTK`,
+    ``,
+    `_Delete this comment to cancel._`
+  ].join("\n");
+}
 async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, heartbeat, db, runId) {
   const isRoot = process.getuid?.() === 0;
   for (let attempt = 1; attempt <= MAX_CLI_RETRIES; attempt++) {
@@ -27819,6 +27849,7 @@ function runCLIWithHeartbeat(apiKey, modelId, prompt, isRoot, hb, db, runId) {
     const claudeArgs = ["-p", "--dangerously-skip-permissions", "--output-format", "json", "--max-turns", "15", "--model", modelId];
     const startTime = Date.now();
     let output = "";
+    let settled = false;
     core.info(`Executing: claude CLI (${modelId})`);
     let child;
     if (isRoot) {
@@ -27838,15 +27869,20 @@ function runCLIWithHeartbeat(apiKey, modelId, prompt, isRoot, hb, db, runId) {
     child.stderr?.on("data", (data) => {
       core.info(`CLI stderr: ${data.toString().slice(0, 200)}`);
     });
+    let tick = 0;
     const heartbeatTimer = setInterval(async () => {
       const elapsed = Math.round((Date.now() - startTime) / 1e3);
+      tick++;
       sessionUpdate(db, runId, "running");
       const exists = await commentExists(hb.octokit, hb.owner, hb.repo, hb.replyCommentId);
       if (!exists) {
         core.info("Comment deleted \u2014 killing CLI");
         child.kill("SIGTERM");
         clearInterval(heartbeatTimer);
-        reject(new Error("Cancelled by user"));
+        if (!settled) {
+          settled = true;
+          reject(new Error("Cancelled by user"));
+        }
         return;
       }
       await safeUpdate(
@@ -27854,12 +27890,7 @@ function runCLIWithHeartbeat(apiKey, modelId, prompt, isRoot, hb, db, runId) {
         hb.owner,
         hb.repo,
         hb.replyCommentId,
-        `> \u23F3 Working... (${elapsed}s elapsed)
-
-\u{1F50D} Analyzing with **${hb.modelLabel}**...
-\u2699\uFE0F CLI + RTK
-
-_Delete this comment to cancel._`
+        spinnerFrame(tick, elapsed, hb.modelLabel)
       );
     }, HEARTBEAT_INTERVAL_MS);
     const timeoutTimer = setTimeout(() => {
@@ -27869,7 +27900,9 @@ _Delete this comment to cancel._`
     child.on("close", (code) => {
       clearInterval(heartbeatTimer);
       clearTimeout(timeoutTimer);
+      if (settled) return;
       if (code !== 0 && !output) {
+        settled = true;
         reject(new Error(`CLI exited with code ${code}`));
         return;
       }
@@ -27888,6 +27921,7 @@ _Delete this comment to cancel._`
           }
         } catch {
         }
+        settled = true;
         resolve({
           text: json.result ?? json.content ?? output,
           costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
@@ -27897,6 +27931,7 @@ _Delete this comment to cancel._`
           rtkSavings
         });
       } catch (e) {
+        settled = true;
         reject(new Error(`Failed to parse CLI output: ${e.message}`));
       }
     });
@@ -27960,28 +27995,13 @@ async function run() {
       owner,
       repo,
       issue_number: issueNumber,
-      body: `> @${sender} \u2014 got it
-
-\u23F3 Working on it... _(${selectedModel.label}, ${modeLabel})_
-
-_Delete this comment to cancel._`
+      body: spinnerFrame(0, 0, selectedModel.label)
     });
     replyCommentId = reply.id;
     sessionUpdate(auditDb, runId, "working-comment", { replyCommentId });
     let prTitle = "", prBody = "", filesList = "", prCommentsContext = "";
     try {
-      await safeUpdate(
-        octokit,
-        owner,
-        repo,
-        replyCommentId,
-        `> @${sender} \u2014 got it
-
-\u{1F4D6} Reading PR...
-\u{1F4AC} Loading conversation context...
-
-_Delete this comment to cancel._`
-      );
+      await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(1, 2, selectedModel.label));
       sessionUpdate(auditDb, runId, "loading-context");
       const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: issueNumber });
       prTitle = pr.title;

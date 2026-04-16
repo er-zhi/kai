@@ -200,6 +200,40 @@ const CLI_TIMEOUT_MS = 300_000;
 const MAX_CLI_RETRIES = 3;
 const RETRY_DELAYS = [15_000, 30_000, 60_000]; // exponential: 15s, 30s, 60s
 
+// Animated spinner frames — cycles on each heartbeat tick
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const PHASES = [
+  "Reading PR context",
+  "Loading conversation history",
+  "Analyzing code changes",
+  "Running security checks",
+  "Inspecting files",
+  "Preparing response",
+];
+
+function progressBar(elapsed: number, maxSec: number): string {
+  const pct = Math.min(elapsed / maxSec, 0.95); // never show 100% until done
+  const filled = Math.round(pct * 20);
+  return "▓".repeat(filled) + "░".repeat(20 - filled);
+}
+
+function spinnerFrame(tick: number, elapsed: number, modelLabel: string): string {
+  const s = SPINNER[tick % SPINNER.length];
+  const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
+  const bar = progressBar(elapsed, CLI_TIMEOUT_MS / 1000);
+  const min = Math.floor(elapsed / 60);
+  const sec = elapsed % 60;
+  const time = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+  return [
+    `${s} **${phase}...** (${time})`,
+    `\`${bar}\` ${Math.round((elapsed / (CLI_TIMEOUT_MS / 1000)) * 100)}%`,
+    ``,
+    `Model: **${modelLabel}** | Mode: CLI + RTK`,
+    ``,
+    `_Delete this comment to cancel._`,
+  ].join("\n");
+}
+
 interface HeartbeatContext {
   octokit: Octokit; owner: string; repo: string;
   replyCommentId: number; sender: string; modelLabel: string;
@@ -249,6 +283,7 @@ function runCLIWithHeartbeat(
     const claudeArgs = ["-p", "--dangerously-skip-permissions", "--output-format", "json", "--max-turns", "15", "--model", modelId];
     const startTime = Date.now();
     let output = "";
+    let settled = false; // guard against double resolve/reject
 
     core.info(`Executing: claude CLI (${modelId})`);
 
@@ -270,9 +305,11 @@ function runCLIWithHeartbeat(
     child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
     child.stderr?.on("data", (data: Buffer) => { core.info(`CLI stderr: ${data.toString().slice(0, 200)}`); });
 
-    // Heartbeat: every 15s update comment with elapsed time
+    // Heartbeat: every 15s update comment with animated spinner
+    let tick = 0;
     const heartbeatTimer = setInterval(async () => {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
+      tick++;
       sessionUpdate(db, runId, "running");
 
       // Check if comment still exists (user cancel)
@@ -281,12 +318,12 @@ function runCLIWithHeartbeat(
         core.info("Comment deleted — killing CLI");
         child.kill("SIGTERM");
         clearInterval(heartbeatTimer);
-        reject(new Error("Cancelled by user"));
+        if (!settled) { settled = true; reject(new Error("Cancelled by user")); }
         return;
       }
 
       await safeUpdate(hb.octokit, hb.owner, hb.repo, hb.replyCommentId,
-        `> ⏳ Working... (${elapsed}s elapsed)\n\n🔍 Analyzing with **${hb.modelLabel}**...\n⚙️ CLI + RTK\n\n_Delete this comment to cancel._`);
+        spinnerFrame(tick, elapsed, hb.modelLabel));
     }, HEARTBEAT_INTERVAL_MS);
 
     // Timeout
@@ -299,7 +336,10 @@ function runCLIWithHeartbeat(
       clearInterval(heartbeatTimer);
       clearTimeout(timeoutTimer);
 
+      if (settled) return;
+
       if (code !== 0 && !output) {
+        settled = true;
         reject(new Error(`CLI exited with code ${code}`));
         return;
       }
@@ -323,6 +363,7 @@ function runCLIWithHeartbeat(
           }
         } catch { /* */ }
 
+        settled = true;
         resolve({
           text: json.result ?? json.content ?? output,
           costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
@@ -334,6 +375,7 @@ function runCLIWithHeartbeat(
           rtkSavings,
         });
       } catch (e) {
+        settled = true;
         reject(new Error(`Failed to parse CLI output: ${(e as Error).message}`));
       }
     });
@@ -405,10 +447,10 @@ async function run() {
       sender, commentId, model: selectedModel.label,
     });
 
-    // Create working comment
+    // Create working comment with initial spinner
     const { data: reply } = await octokit.issues.createComment({
       owner, repo, issue_number: issueNumber,
-      body: `> @${sender} — got it\n\n⏳ Working on it... _(${selectedModel.label}, ${modeLabel})_\n\n_Delete this comment to cancel._`,
+      body: spinnerFrame(0, 0, selectedModel.label),
     });
     replyCommentId = reply.id;
     sessionUpdate(auditDb, runId, "working-comment", { replyCommentId });
@@ -417,8 +459,7 @@ async function run() {
     let prTitle = "", prBody = "", filesList = "", prCommentsContext = "";
 
     try {
-      await safeUpdate(octokit, owner, repo, replyCommentId,
-        `> @${sender} — got it\n\n📖 Reading PR...\n💬 Loading conversation context...\n\n_Delete this comment to cancel._`);
+      await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(1, 2, selectedModel.label));
       sessionUpdate(auditDb, runId, "loading-context");
 
       const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: issueNumber });
