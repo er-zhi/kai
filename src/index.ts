@@ -484,6 +484,9 @@ async function run() {
       const durationMs = Date.now() - startTime;
       const totalTokens = r.inputTokens + r.outputTokens;
       const rtkPct = r.rtkSavings || "— %";
+      if (!r.rtkSavings || r.rtkSavings === "0.0%") {
+        core.error(`CRITICAL: RTK savings empty or zero — tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
+      }
       const durationSec = Math.round(durationMs / 1000);
       const inK = Math.round(r.inputTokens / 1000);
       const outK = Math.round(r.outputTokens / 1000);
