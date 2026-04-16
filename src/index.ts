@@ -236,9 +236,27 @@ async function run() {
           try {
             const r = await callClaudeCLI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
             result = r.text;
-            const rtkInfo = r.rtk ? ` · RTK: ${r.rtkSavings || "active"}` : "";
-          footer = `_**${selectedModel.label}** · CLI${rtkInfo} · $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) · \`use sonnet\` / \`use opus\`_`;
             usedCLI = true;
+
+            const lines = [
+              `| Metric | Value |`,
+              `|--------|-------|`,
+              `| Model | **${selectedModel.label}** |`,
+              `| Mode | CLI${r.rtk ? " + RTK" : ""} |`,
+              `| Cost | $${r.costUsd.toFixed(4)} |`,
+              `| Turns | ${r.numTurns} |`,
+            ];
+            if (r.rtk && r.rtkSavings) {
+              lines.push(`| RTK savings | ${r.rtkSavings.replace(/\n/g, " ")} |`);
+            }
+            lines.push("");
+            lines.push(`<details><summary>💡 Tips</summary>\n`);
+            lines.push(`- \`@kai use sonnet\` — deeper analysis ($3/MTok)`);
+            lines.push(`- \`@kai use opus\` — architecture-level review ($15/MTok)`);
+            lines.push(`- Delete this comment to cancel a running job`);
+            lines.push(`- RTK saves ~40-90% tokens on CLI operations\n`);
+            lines.push(`</details>`);
+            footer = lines.join("\n");
           } catch (cliErr: unknown) {
             core.warning(`CLI failed, falling back to API: ${cliErr instanceof Error ? cliErr.message.slice(0, 100) : cliErr}`);
           }
@@ -247,7 +265,20 @@ async function run() {
           const r = await callClaudeAPI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
           const total = r.inputTokens + r.outputTokens;
           result = r.text;
-          footer = `_**${selectedModel.label}** · API · ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${total.toLocaleString()}) · \`use sonnet\` / \`use opus\`_`;
+          footer = [
+            `| Metric | Value |`,
+            `|--------|-------|`,
+            `| Model | **${selectedModel.label}** |`,
+            `| Mode | API (direct) |`,
+            `| Tokens | ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out |`,
+            `| Total | ${total.toLocaleString()} tokens |`,
+            ``,
+            `<details><summary>💡 Tips</summary>\n`,
+            `- \`@kai use sonnet\` — deeper analysis`,
+            `- \`@kai use opus\` — architecture-level review`,
+            `- Delete this comment to cancel a running job\n`,
+            `</details>`,
+          ].join("\n");
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
