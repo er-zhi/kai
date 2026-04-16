@@ -27622,6 +27622,21 @@ function initAuditDb() {
       finished_at TEXT,
       status TEXT DEFAULT 'running',
       error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS router_decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      repo TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      comment_id INTEGER NOT NULL,
+      sender TEXT NOT NULL,
+      intent TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      model_tier TEXT NOT NULL,
+      estimated_tokens INTEGER NOT NULL,
+      estimated_cost_usd REAL NOT NULL,
+      reason TEXT
     )
   `);
   return db;
@@ -27693,7 +27708,29 @@ function auditLog(db, data) {
     core.warning(`Audit log failed: ${e}`);
   }
 }
-async function getPRCommentsContext(octokit, owner, repo, issueNumber) {
+function logRouterDecision(db, data) {
+  try {
+    db.prepare(`
+      INSERT INTO router_decisions (repo, pr_number, comment_id, sender, intent, decision, confidence, model_tier, estimated_tokens, estimated_cost_usd, reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      data.repo,
+      data.prNumber,
+      data.commentId,
+      data.sender,
+      data.route.intent,
+      data.route.decision,
+      data.route.confidence,
+      data.route.modelTier,
+      data.route.estimatedTokens,
+      data.route.estimatedCostUsd,
+      data.route.reason
+    );
+  } catch (e) {
+    core.warning(`Router decision log failed: ${e}`);
+  }
+}
+async function getPRCommentsContext(octokit, owner, repo, issueNumber, maxComments = 5, maxChars = 200) {
   try {
     const { data: comments } = await octokit.issues.listComments({
       owner,
@@ -27701,11 +27738,11 @@ async function getPRCommentsContext(octokit, owner, repo, issueNumber) {
       issue_number: issueNumber,
       per_page: 30
     });
-    const recent = comments.slice(-5);
+    const recent = comments.slice(-maxComments);
     if (recent.length === 0) return "";
     return recent.map((c) => {
       const who = c.user?.login ?? "?";
-      const body = (c.body ?? "").slice(0, 200).replace(/\n/g, " ");
+      const body = (c.body ?? "").slice(0, maxChars).replace(/\n/g, " ");
       return `${who}: ${body}`;
     }).join("\n");
   } catch {
@@ -27726,6 +27763,71 @@ function parseModelFromMessage(message) {
     }
   }
   return { model: DEFAULT_MODEL, cleanMessage: message };
+}
+function normalizeWhitespace(message) {
+  return message.replace(/\s+/g, " ").trim();
+}
+function estimateTokensFromChars(text) {
+  return Math.ceil(text.length / 4);
+}
+function routeEvent(rawMessage, modelTier) {
+  const normalized = normalizeWhitespace(rawMessage);
+  const lower = normalized.toLowerCase();
+  const base = (intent, decision, reason, confidence = 0.95) => ({
+    intent,
+    decision,
+    confidence,
+    modelTier,
+    estimatedTokens: estimateTokensFromChars(normalized),
+    estimatedCostUsd: 0,
+    reason,
+    normalizedMessage: normalized,
+    maxContextTokens: 1e4,
+    commitExpected: false
+  });
+  if (!normalized) {
+    return { ...base("needs-input", "ask-clarification", "empty mention", 0.99), maxContextTokens: 0 };
+  }
+  if (/^(stop|cancel|abort|quit)\b/i.test(normalized)) {
+    return { ...base("stop", "stop", "global stop command", 1), maxContextTokens: 0 };
+  }
+  if (isMetaQuestion(normalized)) {
+    return { ...base("meta-template", "reply-template", "meta question handled by template", 0.99), maxContextTokens: 0 };
+  }
+  if (/https?:\/\/\S+\s*$/i.test(normalized) && normalized.split(" ").length <= 3) {
+    return { ...base("needs-input", "ask-clarification", "link-only request needs task", 0.9), maxContextTokens: 0 };
+  }
+  if (/^(fix|do|handle|improve|make better|review everything|check everything)$/i.test(normalized)) {
+    return { ...base("needs-input", "ask-clarification", "task too vague", 0.86), maxContextTokens: 0 };
+  }
+  if (/\b(job|super|sudo|su)\b/i.test(normalized)) {
+    return { ...base("job-candidate", "call-model", "stateful job candidate", 0.82), maxContextTokens: 2e4 };
+  }
+  const commitExpected = shouldVerifyCommit(normalized);
+  if (commitExpected) {
+    const intent = /\b(commit|push)\b/i.test(normalized) ? "commit-write" : "write-fix";
+    return {
+      ...base(intent, "call-model", "imperative write task", 0.9),
+      estimatedTokens: 2e4,
+      estimatedCostUsd: modelTier === "haiku" ? 0.02 : modelTier === "sonnet" ? 0.12 : 0.5,
+      maxContextTokens: 3e4,
+      commitExpected: true
+    };
+  }
+  if (/\b(review|risk|security|issue|bug|remaining)\b/i.test(normalized)) {
+    return {
+      ...base("review", "call-model", "review or analysis request", 0.88),
+      estimatedTokens: 4e4,
+      estimatedCostUsd: modelTier === "haiku" ? 0.04 : modelTier === "sonnet" ? 0.2 : 0.8,
+      maxContextTokens: 6e4
+    };
+  }
+  return {
+    ...base("simple-answer", "call-model", "simple answer request", 0.78),
+    estimatedTokens: 12e3,
+    estimatedCostUsd: modelTier === "haiku" ? 0.01 : modelTier === "sonnet" ? 0.06 : 0.25,
+    maxContextTokens: 15e3
+  };
 }
 function requireClaudeCLI() {
   try {
@@ -27833,9 +27935,10 @@ function commitVerificationNote(userMessage, beforeHead, branch) {
 
 **Commit verification failed:** no file changes or new commit were found after the requested work. Nothing was pushed.`;
 }
-function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, repoFullName) {
+function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, repoFullName, route) {
   const parts = [
     `Kai, AI code reviewer. Service: repos/${repoFullName.split("/").pop()}. PR: "${prTitle}"`,
+    `Router: intent=${route.intent}; confidence=${route.confidence}; contextBudget=${route.maxContextTokens}; commitExpected=${route.commitExpected}`,
     prBody ? `Desc: ${prBody.slice(0, 300)}` : "",
     `Files:
 ${filesList}`
@@ -27860,6 +27963,7 @@ ${prCommentsContext}`);
       `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context.`,
       `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files \u2014 these are bot infrastructure, not project code.`,
       `Task: ${userMessage}`,
+      `Success criteria: satisfy the task, stay within the selected context, and report concrete evidence.`,
       `IMPORTANT: Answer EXACTLY what the user asked. Do NOT default to security review unless explicitly asked.`,
       `Rules: concise, markdown, repos/<service>/path/file.py:line refs, max 50 lines. Don't repeat prior analysis.`,
       `For imperative write tasks (fix/add/update/create/patch/refactor/document), commit and push the change to the PR branch unless the user explicitly asks not to.`,
@@ -28050,24 +28154,50 @@ async function run() {
     }
     if (!commentBody.toLowerCase().includes(trigger.toLowerCase())) return;
     if (sender.includes("[bot]")) return;
-    core.info(`Triggered by @${sender} in #${issueNumber}`);
     octokit = new Octokit2({ auth: githubToken });
     ({ owner, repo } = context2.repo);
+    const idx = commentBody.toLowerCase().indexOf(trigger.toLowerCase());
+    rawMessage = commentBody.slice(idx + trigger.length).trim();
+    const { model: modelTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
+    const selectedModel = MODELS[modelTier];
+    const route = routeEvent(userMessage, modelTier);
+    core.info(`Triggered by @${sender} in #${issueNumber}`);
+    core.info(`Router: ${route.intent} -> ${route.decision} (${route.reason}, confidence ${route.confidence})`);
+    const auditDb = initAuditDb();
+    const runId = `${owner}/${repo}#${issueNumber}-${Date.now()}`;
+    const startTime = Date.now();
+    logRouterDecision(auditDb, {
+      repo: `${owner}/${repo}`,
+      prNumber: issueNumber,
+      commentId,
+      sender,
+      route
+    });
+    if (route.decision === "ignore") return;
+    if (route.decision === "stop") {
+      try {
+        await octokit.reactions.createForIssueComment({ owner, repo, comment_id: commentId, content: "+1" });
+      } catch {
+      }
+      auditLog(auditDb, {
+        sender,
+        repo: `${owner}/${repo}`,
+        prNumber: issueNumber,
+        model: "none",
+        message: rawMessage,
+        durationMs: Date.now() - startTime,
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        status: "cancelled"
+      });
+      core.info("Stop command handled without model call");
+      return;
+    }
     try {
       await octokit.reactions.createForIssueComment({ owner, repo, comment_id: commentId, content: "eyes" });
     } catch {
     }
-    const idx = commentBody.toLowerCase().indexOf(trigger.toLowerCase());
-    rawMessage = commentBody.slice(idx + trigger.length).trim() || "review this PR";
-    const { model: modelTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
-    const selectedModel = MODELS[modelTier];
-    requireClaudeCLI();
-    const rtkVersion = requireRTK();
-    const modeLabel = "CLI + RTK";
-    core.info(`Mode: ${modeLabel} | Model: ${selectedModel.label} | RTK: ${rtkVersion}`);
-    const auditDb = initAuditDb();
-    const runId = `${owner}/${repo}#${issueNumber}-${Date.now()}`;
-    const startTime = Date.now();
     auditLog(auditDb, {
       sender,
       repo: `${owner}/${repo}`,
@@ -28085,7 +28215,34 @@ async function run() {
       model: selectedModel.label
     });
     sessionUpdate(auditDb, runId, "queued");
-    if (isMetaQuestion(userMessage)) {
+    if (route.decision === "ask-clarification") {
+      const { data: clarificationReply } = await octokit.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body: `> @${sender}: ${rawMessage || "(empty)"}
+
+I need a specific target and expected outcome before spending model tokens. Please include the file, failure, PR, or change you want.
+
+---
+<sub>Kai \xB7 router \xB7 0K in / 0K out \xB7 $0.0000</sub>`
+      });
+      sessionUpdate(auditDb, runId, "completed", { status: "completed", replyCommentId: clarificationReply.id });
+      auditLog(auditDb, {
+        sender,
+        repo: `${owner}/${repo}`,
+        prNumber: issueNumber,
+        model: "router",
+        message: rawMessage,
+        durationMs: Date.now() - startTime,
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        status: "needs-input"
+      });
+      return;
+    }
+    if (route.decision === "reply-template") {
       const durationSec = Math.round((Date.now() - startTime) / 1e3);
       const footer2 = buildFooter(selectedModel.label, "0.0%", 0, 0, 0, 0, durationSec);
       const { data: metaReply } = await octokit.issues.createComment({
@@ -28104,6 +28261,10 @@ ${META_TEMPLATE}
       core.info("Meta question \u2014 template reply");
       return;
     }
+    requireClaudeCLI();
+    const rtkVersion = requireRTK();
+    const modeLabel = "CLI + RTK";
+    core.info(`Mode: ${modeLabel} | Model: ${selectedModel.label} | RTK: ${rtkVersion}`);
     const { data: reply } = await octokit.issues.createComment({
       owner,
       repo,
@@ -28142,7 +28303,9 @@ ${META_TEMPLATE}
       }
       const { data: files } = await octokit.pulls.listFiles({ owner, repo, pull_number: issueNumber, per_page: 100 });
       filesList = files.map((f) => `${f.filename} +${f.additions}/-${f.deletions}`).join("\n");
-      prCommentsContext = await getPRCommentsContext(octokit, owner, repo, issueNumber);
+      const commentWindow = route.intent === "simple-answer" ? 2 : route.commitExpected ? 3 : 5;
+      const commentChars = route.intent === "simple-answer" ? 160 : 220;
+      prCommentsContext = await getPRCommentsContext(octokit, owner, repo, issueNumber, commentWindow, commentChars);
       sessionUpdate(auditDb, runId, "context-loaded");
     } catch (e) {
       core.warning(`PR context error: ${e instanceof Error ? e.message : e}`);
@@ -28169,7 +28332,7 @@ CLAUDE.md
         });
       } catch {
       }
-      const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`);
+      const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route);
       const maxTurns = getMaxTurns(userMessage, modelTier);
       core.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);
       const heartbeatCtx = {
