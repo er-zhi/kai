@@ -31,7 +31,8 @@ function hasClaudeCLI(): boolean {
 function hasRTK(): boolean {
   try {
     // Verify it's rtk-ai/rtk (has 'rewrite' command), not the crates.io rtk
-    execSync("rtk rewrite echo test", { stdio: "pipe", timeout: 5000 });
+    // Use 'git status' which always has an RTK equivalent (exit 0)
+    execSync("rtk rewrite 'git status'", { stdio: "pipe", timeout: 5000 });
     return true;
   } catch { return false; }
 }

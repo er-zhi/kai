@@ -33399,7 +33399,7 @@ function hasClaudeCLI() {
 }
 function hasRTK() {
   try {
-    (0, import_node_child_process.execSync)("rtk rewrite echo test", { stdio: "pipe", timeout: 5e3 });
+    (0, import_node_child_process.execSync)("rtk rewrite 'git status'", { stdio: "pipe", timeout: 5e3 });
     return true;
   } catch {
     return false;
