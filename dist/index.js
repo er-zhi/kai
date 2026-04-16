@@ -33426,7 +33426,9 @@ User request: ${userMessage}`,
     `
 Be concise and actionable. Use markdown. Reference files and line numbers.`
   ].filter(Boolean).join("\n");
-  const cmd = `${prefix} claude -p --dangerously-skip-permissions --output-format json --max-turns 10 --model ${modelId}`.trim();
+  const isRoot = process.getuid?.() === 0;
+  const claudeArgs = `-p --dangerously-skip-permissions --output-format json --max-turns 10 --model ${modelId}`;
+  const cmd = isRoot ? `su -s /bin/bash kai -c 'ANTHROPIC_API_KEY=${apiKey} ${prefix} claude ${claudeArgs}'` : `${prefix} claude ${claudeArgs}`.trim();
   core.info(`Executing: ${rtk ? "rtk \u2192 " : ""}claude CLI (${modelId})`);
   const output = (0, import_node_child_process.execSync)(cmd, {
     input: prompt,

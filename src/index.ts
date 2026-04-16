@@ -63,7 +63,13 @@ async function callClaudeCLI(
     `\nBe concise and actionable. Use markdown. Reference files and line numbers.`,
   ].filter(Boolean).join("\n");
 
-  const cmd = `${prefix} claude -p --dangerously-skip-permissions --output-format json --max-turns 10 --model ${modelId}`.trim();
+  // Claude CLI blocks --dangerously-skip-permissions under root.
+  // Drop to 'kai' user if running as root (Docker runner).
+  const isRoot = process.getuid?.() === 0;
+  const claudeArgs = `-p --dangerously-skip-permissions --output-format json --max-turns 10 --model ${modelId}`;
+  const cmd = isRoot
+    ? `su -s /bin/bash kai -c 'ANTHROPIC_API_KEY=${apiKey} ${prefix} claude ${claudeArgs}'`
+    : `${prefix} claude ${claudeArgs}`.trim();
 
   core.info(`Executing: ${rtk ? "rtk → " : ""}claude CLI (${modelId})`);
 
