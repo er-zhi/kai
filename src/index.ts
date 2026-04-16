@@ -194,7 +194,7 @@ function isMetaQuestion(msg: string): boolean {
   return /^(who are you|what are you|how to use|help|what can you do|кто ты|как пользоваться)/i.test(msg);
 }
 
-const META_TEMPLATE = `Я помощник по работе с проектом Kodif. Моя задача — помочь с минимальным расходом токенов и дать приемлемый опыт по вопросам архитектуры Kodif. Как пользоваться: пишите комментарий с задачей для @kai; если нужен более глубокий анализ, добавьте use sonnet или use opus; режим loop (пока в разработке) предназначен для проверки гипотез в песочнице, где агент сможет работать с полными правами, автономно делать коммиты и открывать PR.`;
+const META_TEMPLATE = `I'm Kai, the Kodif project assistant. My goal is to help with minimal token spend and provide a good experience for Kodif architecture questions. Usage: write a comment with a task for @kai; for deeper analysis add \`use sonnet\` or \`use opus\`; loop mode (under development) is a sandbox where the agent will work with full permissions, autonomously commit and open PRs.`;
 
 function buildCLIPrompt(
   userMessage: string, prTitle: string, prBody: string,
