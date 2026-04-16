@@ -2,7 +2,7 @@ import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { Octokit } from "@octokit/rest";
 import { execSync } from "node:child_process";
-import Anthropic from "@anthropic-ai/sdk";
+// Anthropic SDK removed — CLI + RTK is the only execution path
 
 const MODELS: Record<string, { id: string; label: string }> = {
   haiku:  { id: "claude-haiku-4-5-20251001",  label: "Haiku" },
@@ -28,17 +28,16 @@ function hasClaudeCLI(): boolean {
   } catch { return false; }
 }
 
-function hasRTK(): boolean {
+function requireRTK(): string {
+  // RTK is mandatory — running without it wastes money (no token savings)
   try {
     const ver = execSync("rtk --version", { stdio: "pipe", timeout: 5000, encoding: "utf-8" }).trim();
     core.info(`RTK found: ${ver}`);
-    // Verify it's rtk-ai/rtk (has 'rewrite' subcommand)
     execSync("rtk rewrite 'git status'", { stdio: "pipe", timeout: 5000 });
-    return true;
+    return ver;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message.slice(0, 200) : String(e);
-    core.info(`RTK not available: ${msg}`);
-    return false;
+    throw new Error(`RTK is required but not available: ${msg}. Running without RTK wastes money — fix the runner.`);
   }
 }
 
@@ -128,45 +127,6 @@ async function callClaudeCLI(
   };
 }
 
-// --- Direct API fallback (when CLI not available) ---
-
-interface APIResult {
-  text: string;
-  inputTokens: number;
-  outputTokens: number;
-  mode: "api";
-}
-
-async function callClaudeAPI(
-  apiKey: string, modelId: string, userMessage: string,
-  prTitle: string, prBody: string, filesList: string, diff: string,
-): Promise<APIResult> {
-  const client = new Anthropic({ apiKey });
-
-  const response = await client.messages.create({
-    model: modelId,
-    max_tokens: 4096,
-    system: `You are Kai — the Kodif AI engineering agent.
-You are reviewing PR: "${prTitle}"
-${prBody ? `\nPR description: ${prBody}` : ""}
-\nFiles changed:\n${filesList}
-\nFull diff:\n\`\`\`diff\n${diff}\n\`\`\`
-\nBe concise and actionable. Use markdown. Reference files and line numbers.`,
-    messages: [{ role: "user", content: userMessage }],
-  });
-
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map(b => b.text).join("\n");
-
-  return {
-    text,
-    inputTokens: response.usage.input_tokens,
-    outputTokens: response.usage.output_tokens,
-    mode: "api",
-  };
-}
-
 // --- Main ---
 
 async function run() {
@@ -207,10 +167,13 @@ async function run() {
     const { model: modelTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
     const selectedModel = MODELS[modelTier];
 
-    // Detect execution mode
-    const useCLI = hasClaudeCLI();
-    const modeLabel = useCLI ? "CLI" + (hasRTK() ? " + RTK" : "") : "API";
-    core.info(`Mode: ${modeLabel} | Model: ${selectedModel.label}`);
+    // Require CLI + RTK — running without RTK wastes money
+    if (!hasClaudeCLI()) {
+      throw new Error("Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code");
+    }
+    const rtkVersion = requireRTK();
+    const modeLabel = "CLI + RTK";
+    core.info(`Mode: ${modeLabel} | Model: ${selectedModel.label} | RTK: ${rtkVersion}`);
 
     const { data: reply } = await octokit.issues.createComment({
       owner, repo, issue_number: issueNumber,
@@ -261,30 +224,16 @@ async function run() {
         await safeUpdate(octokit, owner, repo, reply.id,
           `> @${sender} — got it\n\n📖 Reading PR...\n🔍 Analyzing... _(${selectedModel.label}, ${modeLabel})_\n\n_Delete this comment to cancel._`);
 
-        let usedCLI = false;
-        if (useCLI) {
-          try {
-            const r = await callClaudeCLI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
-            result = r.text;
-            usedCLI = true;
+        const r = await callClaudeCLI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
+        result = r.text;
 
-            const totalTokens = r.inputTokens + r.outputTokens;
-            const rtkPct = r.rtk && r.rtkSavings ? r.rtkSavings : "— %";
-            footer = `RTK saves ${rtkPct} | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total) $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
-          } catch (cliErr: unknown) {
-            core.warning(`CLI failed, falling back to API: ${cliErr instanceof Error ? cliErr.message.slice(0, 100) : cliErr}`);
-          }
-        }
-        if (!usedCLI) {
-          const r = await callClaudeAPI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
-          const total = r.inputTokens + r.outputTokens;
-          result = r.text;
-          footer = `RTK saves — % | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${total.toLocaleString()} total) | use sonnet or use opus for deeper analysis`;
-        }
+        const totalTokens = r.inputTokens + r.outputTokens;
+        const rtkPct = r.rtkSavings || "— %";
+        footer = `RTK saves ${rtkPct} | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total) $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        core.error(`Claude error: ${msg}`);
-        result = `⚠️ Error: \`${msg.slice(0, 200)}\``;
+        core.error(`Claude CLI error: ${msg}`);
+        result = `⚠️ CLI Error: \`${msg.slice(0, 200)}\`\n\nCheck runner: Claude CLI + RTK must be installed and working.`;
         footer = "";
       }
     }
