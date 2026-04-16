@@ -42,6 +42,8 @@ interface CLIResult {
   text: string;
   costUsd: number;
   numTurns: number;
+  inputTokens: number;
+  outputTokens: number;
   mode: "cli";
   rtk: boolean;
   rtkSavings: string;
@@ -102,6 +104,8 @@ async function callClaudeCLI(
     text: json.result ?? json.content ?? output,
     costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
     numTurns: json.num_turns ?? 1,
+    inputTokens: json.input_tokens ?? json.input_tokens_including_cache ?? 0,
+    outputTokens: json.output_tokens ?? 0,
     mode: "cli",
     rtk,
     rtkSavings,
@@ -208,6 +212,16 @@ async function run() {
       prTitle = pr.title;
       prBody = pr.body ?? "";
 
+      // Checkout PR branch so CLI can read the actual files
+      try {
+        execSync(`git fetch origin ${pr.head.ref} && git checkout ${pr.head.ref}`, {
+          stdio: "pipe", timeout: 30_000, encoding: "utf-8",
+        });
+        core.info(`Checked out PR branch: ${pr.head.ref}`);
+      } catch (e: unknown) {
+        core.warning(`Could not checkout PR branch: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
+      }
+
       const { data: files } = await octokit.pulls.listFiles({ owner, repo, pull_number: issueNumber, per_page: 100 });
       filesList = files.map(f => `- ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]`).join("\n");
 
@@ -220,8 +234,8 @@ async function run() {
     }
 
     // Call Claude (CLI or API)
-    let result: string;
-    let footer: string;
+    let result = "";
+    let footer = "";
 
     if (!anthropicApiKey) {
       result = `📋 **PR: ${prTitle}**\n\nFiles:\n${filesList}`;
@@ -238,25 +252,12 @@ async function run() {
             result = r.text;
             usedCLI = true;
 
-            const lines = [
-              `| Metric | Value |`,
-              `|--------|-------|`,
-              `| Model | **${selectedModel.label}** |`,
-              `| Mode | CLI${r.rtk ? " + RTK" : ""} |`,
-              `| Cost | $${r.costUsd.toFixed(4)} |`,
-              `| Turns | ${r.numTurns} |`,
-            ];
-            if (r.rtk && r.rtkSavings) {
-              lines.push(`| RTK savings | ${r.rtkSavings.replace(/\n/g, " ")} |`);
-            }
-            lines.push("");
-            lines.push(`<details><summary>💡 Tips</summary>\n`);
-            lines.push(`- \`@kai use sonnet\` — deeper analysis ($3/MTok)`);
-            lines.push(`- \`@kai use opus\` — architecture-level review ($15/MTok)`);
-            lines.push(`- Delete this comment to cancel a running job`);
-            lines.push(`- RTK saves ~40-90% tokens on CLI operations\n`);
-            lines.push(`</details>`);
-            footer = lines.join("\n");
+            const totalTokens = r.inputTokens + r.outputTokens;
+            const rtkPart = r.rtk ? ` | RTK saves ${r.rtkSavings.replace(/\n/g, " ").trim() || "—"}` : "";
+            const tokensPart = totalTokens > 0
+              ? ` | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total)`
+              : "";
+            footer = `_Kai (Kodif AI)${rtkPart}${tokensPart} $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) | \`use sonnet\` or \`use opus\` for deeper analysis_`;
           } catch (cliErr: unknown) {
             core.warning(`CLI failed, falling back to API: ${cliErr instanceof Error ? cliErr.message.slice(0, 100) : cliErr}`);
           }
@@ -265,20 +266,7 @@ async function run() {
           const r = await callClaudeAPI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
           const total = r.inputTokens + r.outputTokens;
           result = r.text;
-          footer = [
-            `| Metric | Value |`,
-            `|--------|-------|`,
-            `| Model | **${selectedModel.label}** |`,
-            `| Mode | API (direct) |`,
-            `| Tokens | ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out |`,
-            `| Total | ${total.toLocaleString()} tokens |`,
-            ``,
-            `<details><summary>💡 Tips</summary>\n`,
-            `- \`@kai use sonnet\` — deeper analysis`,
-            `- \`@kai use opus\` — architecture-level review`,
-            `- Delete this comment to cancel a running job\n`,
-            `</details>`,
-          ].join("\n");
+          footer = `_Kai (Kodif AI) | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${total.toLocaleString()} total) | \`use sonnet\` or \`use opus\` for deeper analysis_`;
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -294,7 +282,7 @@ async function run() {
     }
 
     await safeUpdate(octokit, owner, repo, reply.id,
-      `> @${sender}: ${rawMessage}\n\n${result}\n\n${footer}\n\n---\n_Kai (Kodif AI)_`);
+      `> @${sender}: ${rawMessage}\n\n${result}\n\n---\n${footer}`);
 
     core.info("Done");
   } catch (error) {

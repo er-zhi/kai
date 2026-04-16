@@ -33446,6 +33446,8 @@ Be concise and actionable. Use markdown. Reference files and line numbers.`
     text: json.result ?? json.content ?? output,
     costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
     numTurns: json.num_turns ?? 1,
+    inputTokens: json.input_tokens ?? json.input_tokens_including_cache ?? 0,
+    outputTokens: json.output_tokens ?? 0,
     mode: "cli",
     rtk,
     rtkSavings
@@ -33537,6 +33539,16 @@ _Delete this comment to cancel._`
       const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: issueNumber });
       prTitle = pr.title;
       prBody = pr.body ?? "";
+      try {
+        (0, import_node_child_process.execSync)(`git fetch origin ${pr.head.ref} && git checkout ${pr.head.ref}`, {
+          stdio: "pipe",
+          timeout: 3e4,
+          encoding: "utf-8"
+        });
+        core.info(`Checked out PR branch: ${pr.head.ref}`);
+      } catch (e) {
+        core.warning(`Could not checkout PR branch: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
+      }
       const { data: files } = await octokit.pulls.listFiles({ owner, repo, pull_number: issueNumber, per_page: 100 });
       filesList = files.map((f) => `- ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]`).join("\n");
       const maxDiff = modelTier === "haiku" ? 3e4 : modelTier === "sonnet" ? 6e4 : 1e5;
@@ -33546,8 +33558,8 @@ _Delete this comment to cancel._`
     } catch (e) {
       core.warning(`PR context error: ${e instanceof Error ? e.message : e}`);
     }
-    let result;
-    let footer;
+    let result = "";
+    let footer = "";
     if (!anthropicApiKey) {
       result = `\u{1F4CB} **PR: ${prTitle}**
 
@@ -33574,27 +33586,10 @@ _Delete this comment to cancel._`
             const r = await callClaudeCLI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
             result = r.text;
             usedCLI = true;
-            const lines = [
-              `| Metric | Value |`,
-              `|--------|-------|`,
-              `| Model | **${selectedModel.label}** |`,
-              `| Mode | CLI${r.rtk ? " + RTK" : ""} |`,
-              `| Cost | $${r.costUsd.toFixed(4)} |`,
-              `| Turns | ${r.numTurns} |`
-            ];
-            if (r.rtk && r.rtkSavings) {
-              lines.push(`| RTK savings | ${r.rtkSavings.replace(/\n/g, " ")} |`);
-            }
-            lines.push("");
-            lines.push(`<details><summary>\u{1F4A1} Tips</summary>
-`);
-            lines.push(`- \`@kai use sonnet\` \u2014 deeper analysis ($3/MTok)`);
-            lines.push(`- \`@kai use opus\` \u2014 architecture-level review ($15/MTok)`);
-            lines.push(`- Delete this comment to cancel a running job`);
-            lines.push(`- RTK saves ~40-90% tokens on CLI operations
-`);
-            lines.push(`</details>`);
-            footer = lines.join("\n");
+            const totalTokens = r.inputTokens + r.outputTokens;
+            const rtkPart = r.rtk ? ` | RTK saves ${r.rtkSavings.replace(/\n/g, " ").trim() || "\u2014"}` : "";
+            const tokensPart = totalTokens > 0 ? ` | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total)` : "";
+            footer = `_Kai (Kodif AI)${rtkPart}${tokensPart} $${r.costUsd.toFixed(4)} \xB7 ${r.numTurns} turn(s) | \`use sonnet\` or \`use opus\` for deeper analysis_`;
           } catch (cliErr) {
             core.warning(`CLI failed, falling back to API: ${cliErr instanceof Error ? cliErr.message.slice(0, 100) : cliErr}`);
           }
@@ -33603,22 +33598,7 @@ _Delete this comment to cancel._`
           const r = await callClaudeAPI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
           const total = r.inputTokens + r.outputTokens;
           result = r.text;
-          footer = [
-            `| Metric | Value |`,
-            `|--------|-------|`,
-            `| Model | **${selectedModel.label}** |`,
-            `| Mode | API (direct) |`,
-            `| Tokens | ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out |`,
-            `| Total | ${total.toLocaleString()} tokens |`,
-            ``,
-            `<details><summary>\u{1F4A1} Tips</summary>
-`,
-            `- \`@kai use sonnet\` \u2014 deeper analysis`,
-            `- \`@kai use opus\` \u2014 architecture-level review`,
-            `- Delete this comment to cancel a running job
-`,
-            `</details>`
-          ].join("\n");
+          footer = `_Kai (Kodif AI) | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${total.toLocaleString()} total) | \`use sonnet\` or \`use opus\` for deeper analysis_`;
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -33640,10 +33620,8 @@ _Delete this comment to cancel._`
 
 ${result}
 
-${footer}
-
 ---
-_Kai (Kodif AI)_`
+${footer}`
     );
     core.info("Done");
   } catch (error2) {
