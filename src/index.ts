@@ -196,6 +196,23 @@ function isMetaQuestion(msg: string): boolean {
 
 const META_TEMPLATE = `I'm Kai, the Kodif project assistant. My goal is to help with minimal token spend and provide a good experience for Kodif architecture questions. Usage: write a comment with a task for @kai; for deeper analysis add \`use sonnet\` or \`use opus\`; loop mode (under development) is a sandbox where the agent will work with full permissions, autonomously commit and open PRs.`;
 
+function buildFooter(
+  modelLabel: string,
+  rtkSavings: string,
+  inputTokens: number,
+  outputTokens: number,
+  costUsd: number,
+  numTurns: number,
+  durationSec: number,
+  cacheReadTokens = 0,
+): string {
+  const inK = Math.round(inputTokens / 1000);
+  const outK = Math.round(outputTokens / 1000);
+  const cachePct = inputTokens > 0 ? Math.round((cacheReadTokens / inputTokens) * 100) : 0;
+  const cacheTag = cachePct > 0 ? ` · cache ${cachePct}%` : "";
+  return `Kai · ${modelLabel} · [RTK](https://github.com/rtk-ai/rtk) ${rtkSavings}${cacheTag} · ${inK}K in / ${outK}K out · $${costUsd.toFixed(2)} · ${numTurns}t · ${durationSec}s · deeper analysis: use sonnet / use opus`;
+}
+
 function buildCLIPrompt(
   userMessage: string, prTitle: string, prBody: string,
   filesList: string, prCommentsContext: string, repoFullName: string,
@@ -487,12 +504,14 @@ async function run() {
 
     // Meta question — instant reply, no CLI needed
     if (isMetaQuestion(userMessage)) {
+      const durationSec = Math.round((Date.now() - startTime) / 1000);
+      const footer = buildFooter(selectedModel.label, "0.0%", 0, 0, 0, 0, durationSec);
       const { data: metaReply } = await octokit.issues.createComment({
         owner, repo, issue_number: issueNumber,
-        body: `> @${sender}: ${rawMessage}\n\n${META_TEMPLATE}\n\n---\n<sub>Kai · template · 0 tokens · $0.00</sub>`,
+        body: `> @${sender}: ${rawMessage}\n\n${META_TEMPLATE}\n\n---\n<sub>${footer}</sub>`,
       });
       sessionUpdate(auditDb, runId, "completed", { status: "completed", replyCommentId: metaReply.id });
-      auditLog(auditDb, { sender, repo: `${owner}/${repo}`, prNumber: issueNumber, model: "template", message: rawMessage, durationMs: Date.now() - startTime, costUsd: 0, status: "completed" });
+      auditLog(auditDb, { sender, repo: `${owner}/${repo}`, prNumber: issueNumber, model: selectedModel.label, message: rawMessage, durationMs: Date.now() - startTime, costUsd: 0, tokensIn: 0, tokensOut: 0, rtkSavings: "0.0%", status: "completed" });
       core.info("Meta question — template reply");
       return;
     }
@@ -573,17 +592,14 @@ async function run() {
       result = r.text;
 
       const durationMs = Date.now() - startTime;
-      const totalTokens = r.inputTokens + r.outputTokens;
       const rtkPct = r.rtkSavings || "— %";
       if (!r.rtkSavings || r.rtkSavings === "0.0%") {
         core.error(`CRITICAL: RTK savings empty or zero — tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
       }
       const durationSec = Math.round(durationMs / 1000);
-      const inK = Math.round(r.inputTokens / 1000);
-      const outK = Math.round(r.outputTokens / 1000);
-      const cachePct = r.inputTokens > 0 ? Math.round((r.cacheReadTokens / r.inputTokens) * 100) : 0;
-      const cacheTag = cachePct > 0 ? ` · cache ${cachePct}%` : "";
-      footer = `Kai · ${selectedModel.label} · [RTK](https://github.com/rtk-ai/rtk) ${rtkPct}${cacheTag} · ${inK}K in / ${outK}K out · $${r.costUsd.toFixed(2)} · ${r.numTurns}t · ${durationSec}s · deeper analysis: use sonnet / use opus`;
+      footer = buildFooter(
+        selectedModel.label, rtkPct, r.inputTokens, r.outputTokens,
+        r.costUsd, r.numTurns, durationSec, r.cacheReadTokens);
 
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
