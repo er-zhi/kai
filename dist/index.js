@@ -27777,7 +27777,7 @@ var HEARTBEAT_INTERVAL_MS = 15e3;
 var CLI_TIMEOUT_MS = 3e5;
 var MAX_CLI_RETRIES = 3;
 var RETRY_DELAYS = [15e3, 3e4, 6e4];
-var SPINNER = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
+var LOADING_GIF = "https://emojis.slackmojis.com/emojis/images/1643514453/4358/loading.gif?1643514453";
 var PHASES = [
   "Reading PR context",
   "Loading conversation history",
@@ -27786,29 +27786,11 @@ var PHASES = [
   "Inspecting files",
   "Preparing response"
 ];
-function progressBar(elapsed, maxSec) {
-  const pct = Math.min(elapsed / maxSec, 0.95);
-  const filled = Math.round(pct * 20);
-  return "\u2593".repeat(filled) + "\u2591".repeat(20 - filled);
-}
-var LOADING_GIF = "https://emojis.slackmojis.com/emojis/images/1643514453/4358/loading.gif?1643514453";
-function spinnerFrame(tick, elapsed, modelLabel) {
-  const s = SPINNER[tick % SPINNER.length];
+function spinnerFrame(_tick, elapsed, _modelLabel) {
   const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
-  const bar = progressBar(elapsed, CLI_TIMEOUT_MS / 1e3);
-  const pct = Math.round(elapsed / (CLI_TIMEOUT_MS / 1e3) * 100);
-  const min = Math.floor(elapsed / 60);
-  const sec = elapsed % 60;
-  const time = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
-  return [
-    `<img src="${LOADING_GIF}" width="18" height="18" align="absmiddle"> ${s} **${phase}...** (${time})`,
-    ``,
-    `\`${bar}\` ${pct}%`,
-    ``,
-    `Model: **${modelLabel}** | Mode: CLI + RTK`,
-    ``,
-    `_Delete this comment to cancel._`
-  ].join("\n");
+  return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...
+
+_Delete this comment to cancel._`;
 }
 async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, heartbeat, db, runId) {
   const isRoot = process.getuid?.() === 0;

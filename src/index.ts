@@ -200,8 +200,8 @@ const CLI_TIMEOUT_MS = 300_000;
 const MAX_CLI_RETRIES = 3;
 const RETRY_DELAYS = [15_000, 30_000, 60_000]; // exponential: 15s, 30s, 60s
 
-// Animated spinner frames — cycles on each heartbeat tick
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const LOADING_GIF = "https://emojis.slackmojis.com/emojis/images/1643514453/4358/loading.gif?1643514453";
+
 const PHASES = [
   "Reading PR context",
   "Loading conversation history",
@@ -211,31 +211,9 @@ const PHASES = [
   "Preparing response",
 ];
 
-function progressBar(elapsed: number, maxSec: number): string {
-  const pct = Math.min(elapsed / maxSec, 0.95); // never show 100% until done
-  const filled = Math.round(pct * 20);
-  return "▓".repeat(filled) + "░".repeat(20 - filled);
-}
-
-const LOADING_GIF = "https://emojis.slackmojis.com/emojis/images/1643514453/4358/loading.gif?1643514453";
-
-function spinnerFrame(tick: number, elapsed: number, modelLabel: string): string {
-  const s = SPINNER[tick % SPINNER.length];
+function spinnerFrame(_tick: number, elapsed: number, _modelLabel: string): string {
   const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
-  const bar = progressBar(elapsed, CLI_TIMEOUT_MS / 1000);
-  const pct = Math.round((elapsed / (CLI_TIMEOUT_MS / 1000)) * 100);
-  const min = Math.floor(elapsed / 60);
-  const sec = elapsed % 60;
-  const time = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
-  return [
-    `<img src="${LOADING_GIF}" width="18" height="18" align="absmiddle"> ${s} **${phase}...** (${time})`,
-    ``,
-    `\`${bar}\` ${pct}%`,
-    ``,
-    `Model: **${modelLabel}** | Mode: CLI + RTK`,
-    ``,
-    `_Delete this comment to cancel._`,
-  ].join("\n");
+  return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...\n\n_Delete this comment to cancel._`;
 }
 
 interface HeartbeatContext {
