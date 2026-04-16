@@ -44,6 +44,7 @@ interface CLIResult {
   numTurns: number;
   mode: "cli";
   rtk: boolean;
+  rtkSavings: string;
 }
 
 async function callClaudeCLI(
@@ -51,23 +52,24 @@ async function callClaudeCLI(
   prTitle: string, prBody: string, filesList: string, diff: string,
 ): Promise<CLIResult> {
   const rtk = hasRTK();
-  const prefix = rtk ? "rtk proxy --" : "";
 
+  // Give Claude the task + tell it to use tools to inspect the code.
+  // This makes Claude run bash commands (git diff, read files, etc) → RTK intercepts them.
   const prompt = [
     `You are Kai — the Kodif AI engineering agent.`,
-    `Review PR: "${prTitle}"`,
-    prBody ? `\nPR description: ${prBody}` : "",
-    `\nFiles changed:\n${filesList}`,
-    `\nDiff:\n\`\`\`diff\n${diff}\n\`\`\``,
-    `\nUser request: ${userMessage}`,
+    `PR: "${prTitle}"`,
+    prBody ? `Description: ${prBody}` : "",
+    `\nChanged files:\n${filesList}`,
+    `\nThe repo is checked out. Use Bash and Read tools to inspect the code.`,
+    `Run: git diff origin/main...HEAD to see changes.`,
+    `Run: git log --oneline -5 for recent commits.`,
+    `Then: ${userMessage}`,
     `\nBe concise and actionable. Use markdown. Reference files and line numbers.`,
   ].filter(Boolean).join("\n");
 
-  // Claude CLI blocks --dangerously-skip-permissions under root.
-  // Drop to 'kai' user if running as root (Docker runner).
-  // RTK hooks are configured in kai user's ~/.claude/settings.json — no wrapper needed.
+  // Drop to 'kai' user if running as root (Claude blocks --dangerously-skip-permissions under root)
   const isRoot = process.getuid?.() === 0;
-  const claudeArgs = `-p --dangerously-skip-permissions --output-format json --max-turns 10 --model ${modelId}`;
+  const claudeArgs = `-p --dangerously-skip-permissions --output-format json --max-turns 15 --model ${modelId}`;
   const cmd = isRoot
     ? `su -s /bin/bash kai -c 'ANTHROPIC_API_KEY=${apiKey} claude ${claudeArgs}'`
     : `claude ${claudeArgs}`;
@@ -85,12 +87,24 @@ async function callClaudeCLI(
   // Parse JSON output
   const json = JSON.parse(output);
 
+  // Get RTK savings after the run
+  let rtkSavings = "";
+  if (rtk) {
+    try {
+      const gainCmd = isRoot
+        ? `su -s /bin/bash kai -c 'rtk gain --json 2>/dev/null || rtk gain 2>/dev/null'`
+        : `rtk gain --json 2>/dev/null || rtk gain 2>/dev/null`;
+      rtkSavings = execSync(gainCmd, { encoding: "utf-8", timeout: 5000 }).trim();
+    } catch { /* */ }
+  }
+
   return {
     text: json.result ?? json.content ?? output,
-    costUsd: json.cost_usd ?? 0,
+    costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
     numTurns: json.num_turns ?? 1,
     mode: "cli",
     rtk,
+    rtkSavings,
   };
 }
 
@@ -222,7 +236,8 @@ async function run() {
           try {
             const r = await callClaudeCLI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
             result = r.text;
-            footer = `_**${selectedModel.label}** · CLI${r.rtk ? " + RTK" : ""} · $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) · \`use sonnet\` / \`use opus\`_`;
+            const rtkInfo = r.rtk ? ` · RTK: ${r.rtkSavings || "active"}` : "";
+          footer = `_**${selectedModel.label}** · CLI${rtkInfo} · $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) · \`use sonnet\` / \`use opus\`_`;
             usedCLI = true;
           } catch (cliErr: unknown) {
             core.warning(`CLI failed, falling back to API: ${cliErr instanceof Error ? cliErr.message.slice(0, 100) : cliErr}`);

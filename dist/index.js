@@ -33407,27 +33407,23 @@ function hasRTK() {
 }
 async function callClaudeCLI(apiKey, modelId, userMessage, prTitle, prBody, filesList, diff) {
   const rtk = hasRTK();
-  const prefix = rtk ? "rtk proxy --" : "";
   const prompt = [
     `You are Kai \u2014 the Kodif AI engineering agent.`,
-    `Review PR: "${prTitle}"`,
-    prBody ? `
-PR description: ${prBody}` : "",
+    `PR: "${prTitle}"`,
+    prBody ? `Description: ${prBody}` : "",
     `
-Files changed:
+Changed files:
 ${filesList}`,
     `
-Diff:
-\`\`\`diff
-${diff}
-\`\`\``,
-    `
-User request: ${userMessage}`,
+The repo is checked out. Use Bash and Read tools to inspect the code.`,
+    `Run: git diff origin/main...HEAD to see changes.`,
+    `Run: git log --oneline -5 for recent commits.`,
+    `Then: ${userMessage}`,
     `
 Be concise and actionable. Use markdown. Reference files and line numbers.`
   ].filter(Boolean).join("\n");
   const isRoot = process.getuid?.() === 0;
-  const claudeArgs = `-p --dangerously-skip-permissions --output-format json --max-turns 10 --model ${modelId}`;
+  const claudeArgs = `-p --dangerously-skip-permissions --output-format json --max-turns 15 --model ${modelId}`;
   const cmd = isRoot ? `su -s /bin/bash kai -c 'ANTHROPIC_API_KEY=${apiKey} claude ${claudeArgs}'` : `claude ${claudeArgs}`;
   core.info(`Executing: ${rtk ? "rtk \u2192 " : ""}claude CLI (${modelId})`);
   const output = (0, import_node_child_process.execSync)(cmd, {
@@ -33438,12 +33434,21 @@ Be concise and actionable. Use markdown. Reference files and line numbers.`
     encoding: "utf-8"
   });
   const json = JSON.parse(output);
+  let rtkSavings = "";
+  if (rtk) {
+    try {
+      const gainCmd = isRoot ? `su -s /bin/bash kai -c 'rtk gain --json 2>/dev/null || rtk gain 2>/dev/null'` : `rtk gain --json 2>/dev/null || rtk gain 2>/dev/null`;
+      rtkSavings = (0, import_node_child_process.execSync)(gainCmd, { encoding: "utf-8", timeout: 5e3 }).trim();
+    } catch {
+    }
+  }
   return {
     text: json.result ?? json.content ?? output,
-    costUsd: json.cost_usd ?? 0,
+    costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
     numTurns: json.num_turns ?? 1,
     mode: "cli",
-    rtk
+    rtk,
+    rtkSavings
   };
 }
 async function callClaudeAPI(apiKey, modelId, userMessage, prTitle, prBody, filesList, diff) {
@@ -33568,7 +33573,8 @@ _Delete this comment to cancel._`
           try {
             const r = await callClaudeCLI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
             result = r.text;
-            footer = `_**${selectedModel.label}** \xB7 CLI${r.rtk ? " + RTK" : ""} \xB7 $${r.costUsd.toFixed(4)} \xB7 ${r.numTurns} turn(s) \xB7 \`use sonnet\` / \`use opus\`_`;
+            const rtkInfo = r.rtk ? ` \xB7 RTK: ${r.rtkSavings || "active"}` : "";
+            footer = `_**${selectedModel.label}** \xB7 CLI${rtkInfo} \xB7 $${r.costUsd.toFixed(4)} \xB7 ${r.numTurns} turn(s) \xB7 \`use sonnet\` / \`use opus\`_`;
             usedCLI = true;
           } catch (cliErr) {
             core.warning(`CLI failed, falling back to API: ${cliErr instanceof Error ? cliErr.message.slice(0, 100) : cliErr}`);
