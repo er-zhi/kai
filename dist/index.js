@@ -33594,9 +33594,8 @@ _Delete this comment to cancel._`
             result = r.text;
             usedCLI = true;
             const totalTokens = r.inputTokens + r.outputTokens;
-            const rtkPart = r.rtk ? ` | RTK saves ${r.rtkSavings.replace(/\n/g, " ").trim() || "\u2014"}` : "";
-            const tokensPart = totalTokens > 0 ? ` | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total)` : "";
-            footer = `Kai (Kodif AI)${rtkPart}${tokensPart} $${r.costUsd.toFixed(4)} \xB7 ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
+            const rtkPct = r.rtk && r.rtkSavings ? r.rtkSavings : "\u2014 %";
+            footer = `Kai (Kodif AI) | RTK saves ${rtkPct} | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total) $${r.costUsd.toFixed(4)} \xB7 ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
           } catch (cliErr) {
             core.warning(`CLI failed, falling back to API: ${cliErr instanceof Error ? cliErr.message.slice(0, 100) : cliErr}`);
           }
@@ -33605,7 +33604,7 @@ _Delete this comment to cancel._`
           const r = await callClaudeAPI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
           const total = r.inputTokens + r.outputTokens;
           result = r.text;
-          footer = `Kai (Kodif AI) | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${total.toLocaleString()} total) | use sonnet or use opus for deeper analysis`;
+          footer = `Kai (Kodif AI) | RTK saves \u2014 % | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${total.toLocaleString()} total) | use sonnet or use opus for deeper analysis`;
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

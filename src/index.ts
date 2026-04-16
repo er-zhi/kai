@@ -263,11 +263,8 @@ async function run() {
             usedCLI = true;
 
             const totalTokens = r.inputTokens + r.outputTokens;
-            const rtkPart = r.rtk ? ` | RTK saves ${r.rtkSavings.replace(/\n/g, " ").trim() || "—"}` : "";
-            const tokensPart = totalTokens > 0
-              ? ` | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total)`
-              : "";
-            footer = `Kai (Kodif AI)${rtkPart}${tokensPart} $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
+            const rtkPct = r.rtk && r.rtkSavings ? r.rtkSavings : "— %";
+            footer = `Kai (Kodif AI) | RTK saves ${rtkPct} | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total) $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
           } catch (cliErr: unknown) {
             core.warning(`CLI failed, falling back to API: ${cliErr instanceof Error ? cliErr.message.slice(0, 100) : cliErr}`);
           }
@@ -276,7 +273,7 @@ async function run() {
           const r = await callClaudeAPI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
           const total = r.inputTokens + r.outputTokens;
           result = r.text;
-          footer = `Kai (Kodif AI) | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${total.toLocaleString()} total) | use sonnet or use opus for deeper analysis`;
+          footer = `Kai (Kodif AI) | RTK saves — % | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${total.toLocaleString()} total) | use sonnet or use opus for deeper analysis`;
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
