@@ -3,7 +3,7 @@ import test from "node:test";
 import { routeEventWithLocalLLM } from "../src/router";
 
 const routerUrl = process.env.KAI_ROUTER_URL;
-const routerModel = process.env.KAI_ROUTER_MODEL ?? "gemma-4-E2B-it";
+const routerModel = process.env.KAI_ROUTER_MODEL ?? "qwen2.5-0.5b-instruct";
 
 test("classifies through a live local LLM router", { skip: !routerUrl }, async () => {
   assert(routerUrl);

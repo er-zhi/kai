@@ -133,7 +133,7 @@ export async function routeEventWithLocalLLM(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "gemma-4-E2B-it",
+        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "qwen2.5-0.5b-instruct",
         messages: [{ role: "user", content: localRouterPrompt(rules.normalizedMessage) }],
         stream: false,
         temperature: 0,

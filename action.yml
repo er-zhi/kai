@@ -15,12 +15,12 @@ inputs:
     description: 'Anthropic API key for Claude-powered analysis'
     required: false
   router_url:
-    description: 'Required local Ollama router URL before any paid model call, for example http://localhost:11434'
+    description: 'Required local LLM router URL (OpenAI-compatible /v1/chat/completions) before any paid model call, for example http://localhost:11434'
     required: false
   router_model:
-    description: 'Local Ollama model used for cheap event filtering'
+    description: 'Local model used for cheap event filtering'
     required: false
-    default: 'gemma4:e2b'
+    default: 'qwen2.5-0.5b-instruct'
 
 runs:
   using: 'node24'

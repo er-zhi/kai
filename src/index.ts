@@ -546,7 +546,7 @@ async function run() {
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");
     const routerUrl = core.getInput("router_url") || process.env.KAI_ROUTER_URL;
-    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "gemma4:e2b";
+    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "qwen2.5-0.5b-instruct";
 
     const { context } = github;
     const event = context.eventName;

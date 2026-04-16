@@ -27701,7 +27701,7 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "gemma-4-E2B-it",
+        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "qwen2.5-0.5b-instruct",
         messages: [{ role: "user", content: localRouterPrompt(rules.normalizedMessage) }],
         stream: false,
         temperature: 0,
@@ -28233,7 +28233,7 @@ async function run() {
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");
     const routerUrl = core.getInput("router_url") || process.env.KAI_ROUTER_URL;
-    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "gemma4:e2b";
+    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "qwen2.5-0.5b-instruct";
     const { context: context2 } = github;
     const event = context2.eventName;
     let commentBody = "", commentId = 0, issueNumber = 0;
