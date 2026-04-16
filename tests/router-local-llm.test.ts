@@ -26,23 +26,27 @@ function startFakeLLM(content: string, status = 200): Promise<{ url: string; clo
   });
 }
 
-test("uses local LLM classification before paid model work", async () => {
-  const llm = await startFakeLLM(JSON.stringify({
-    intent: "write-fix",
-    decision: "call-model",
-    confidence: 0.81,
-    reason: "development write task",
-    maxContextTokens: 24000,
-    commitExpected: true,
-  }));
-
+test("write-fix intent → call-model + commitExpected derived in code", async () => {
+  const llm = await startFakeLLM(JSON.stringify({ intent: "write-fix" }));
   try {
     const route = await routeEventWithLocalLLM("add README docs", "haiku", { url: llm.url });
     assert.equal(route.source, "local-llm");
     assert.equal(route.intent, "write-fix");
     assert.equal(route.decision, "call-model");
     assert.equal(route.commitExpected, true);
-    assert.equal(route.maxContextTokens, 24000);
+  } finally {
+    await llm.close();
+  }
+});
+
+test("meta-template intent → reply-template derived in code", async () => {
+  const llm = await startFakeLLM(JSON.stringify({ intent: "meta-template" }));
+  try {
+    const route = await routeEventWithLocalLLM("who are you", "haiku", { url: llm.url });
+    assert.equal(route.intent, "meta-template");
+    assert.equal(route.decision, "reply-template");
+    assert.equal(route.commitExpected, false);
+    assert.equal(route.maxContextTokens, 0);
   } finally {
     await llm.close();
   }
@@ -55,9 +59,8 @@ test("fails closed when local LLM is unavailable", async () => {
   );
 });
 
-test("fails closed when local LLM returns invalid classification", async () => {
+test("fails closed when local LLM returns invalid intent", async () => {
   const llm = await startFakeLLM("not json");
-
   try {
     await assert.rejects(
       routeEventWithLocalLLM("review this PR", "haiku", { url: llm.url }),
@@ -68,8 +71,8 @@ test("fails closed when local LLM returns invalid classification", async () => {
   }
 });
 
-test("keeps hard no-token commands deterministic without local LLM", async () => {
-  const route = await routeEventWithLocalLLM("stop", "haiku");
-  assert.equal(route.intent, "stop");
+test("empty message is deterministic — no LLM call", async () => {
+  const route = await routeEventWithLocalLLM("   ", "haiku");
+  assert.equal(route.intent, "needs-input");
   assert.equal(route.source, "rules");
 });

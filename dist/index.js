@@ -27584,10 +27584,9 @@ var import_node_sqlite = require("node:sqlite");
 var import_node_fs = require("node:fs");
 
 // src/router.ts
-var OFFTOPIC_PATTERNS = [
-  /\b(weather|recipe|movie|music|song|joke|dating|sports|football|basketball|crypto price|stock price)\b/i,
-  /\b(погода|рецепт|фильм|музыка|песня|шутк|спорт|футбол|баскетбол|крипт|акци[яи])\b/i
-];
+function normalizeWhitespace(message) {
+  return message.replace(/\s+/g, " ").trim();
+}
 function isMetaQuestion(msg) {
   return /^(who are you|what are you|how to use|help|what can you do|кто ты|как пользоваться)/i.test(msg);
 }
@@ -27598,72 +27597,38 @@ function shouldVerifyCommit(message) {
   if (isQuestion) return false;
   return /\b(fix|add|update|create|patch|refactor|write|change|remove|delete|document|documentation|doc)\b/i.test(trimmed);
 }
-function normalizeWhitespace(message) {
-  return message.replace(/\s+/g, " ").trim();
-}
 function estimateTokensFromChars(text) {
   return Math.ceil(text.length / 4);
 }
 function routeEvent(rawMessage, modelTier) {
   const normalized = normalizeWhitespace(rawMessage);
-  const base = (intent, decision, reason, confidence = 0.95) => ({
-    intent,
-    decision,
-    confidence,
+  if (!normalized) {
+    return {
+      intent: "needs-input",
+      decision: "ask-clarification",
+      confidence: 0.99,
+      modelTier,
+      estimatedTokens: 0,
+      estimatedCostUsd: 0,
+      reason: "empty mention",
+      normalizedMessage: normalized,
+      maxContextTokens: 0,
+      commitExpected: false,
+      source: "rules"
+    };
+  }
+  return {
+    intent: "simple-answer",
+    decision: "call-model",
+    confidence: 0.5,
     modelTier,
     estimatedTokens: estimateTokensFromChars(normalized),
     estimatedCostUsd: 0,
-    reason,
+    reason: "pending local-llm classification",
     normalizedMessage: normalized,
     maxContextTokens: 1e4,
     commitExpected: false,
     source: "rules"
-  });
-  if (!normalized) {
-    return { ...base("needs-input", "ask-clarification", "empty mention", 0.99), maxContextTokens: 0 };
-  }
-  if (/^(stop|cancel|abort|quit)\b/i.test(normalized)) {
-    return { ...base("stop", "stop", "global stop command", 1), maxContextTokens: 0 };
-  }
-  if (isMetaQuestion(normalized)) {
-    return { ...base("meta-template", "reply-template", "meta question handled by template", 0.99), maxContextTokens: 0 };
-  }
-  if (OFFTOPIC_PATTERNS.some((pattern) => pattern.test(normalized))) {
-    return { ...base("spam-abuse", "reply-template", "off-topic non-development request", 0.9), maxContextTokens: 0 };
-  }
-  if (/https?:\/\/\S+\s*$/i.test(normalized) && normalized.split(" ").length <= 3) {
-    return { ...base("needs-input", "ask-clarification", "link-only request needs task", 0.9), maxContextTokens: 0 };
-  }
-  if (/^(fix|do|handle|improve|make better|review everything|check everything)$/i.test(normalized)) {
-    return { ...base("needs-input", "ask-clarification", "task too vague", 0.86), maxContextTokens: 0 };
-  }
-  if (/\b(job|super|sudo|su)\b/i.test(normalized)) {
-    return { ...base("job-candidate", "call-model", "stateful job candidate", 0.82), maxContextTokens: 2e4 };
-  }
-  const commitExpected = shouldVerifyCommit(normalized);
-  if (commitExpected) {
-    const intent = /\b(commit|push)\b/i.test(normalized) ? "commit-write" : "write-fix";
-    return {
-      ...base(intent, "call-model", "imperative write task", 0.9),
-      estimatedTokens: 2e4,
-      estimatedCostUsd: modelTier === "haiku" ? 0.02 : modelTier === "sonnet" ? 0.12 : 0.5,
-      maxContextTokens: 3e4,
-      commitExpected: true
-    };
-  }
-  if (/\b(review|risk|security|issue|bug|remaining)\b/i.test(normalized)) {
-    return {
-      ...base("review", "call-model", "review or analysis request", 0.88),
-      estimatedTokens: 4e4,
-      estimatedCostUsd: modelTier === "haiku" ? 0.04 : modelTier === "sonnet" ? 0.2 : 0.8,
-      maxContextTokens: 6e4
-    };
-  }
-  return {
-    ...base("simple-answer", "call-model", "simple answer request", 0.78),
-    estimatedTokens: 12e3,
-    estimatedCostUsd: modelTier === "haiku" ? 0.01 : modelTier === "sonnet" ? 0.06 : 0.25,
-    maxContextTokens: 15e3
   };
 }
 var ROUTER_INTENTS = [
@@ -27680,52 +27645,57 @@ var ROUTER_INTENTS = [
   "spam-abuse",
   "unsupported"
 ];
-var ROUTER_DECISIONS = [
-  "ignore",
-  "stop",
-  "reply-template",
-  "ask-clarification",
-  "call-model"
-];
+function decisionForIntent(intent) {
+  switch (intent) {
+    case "stop":
+      return "stop";
+    case "ignore":
+    case "unsupported":
+      return "ignore";
+    case "meta-template":
+    case "spam-abuse":
+      return "reply-template";
+    case "needs-input":
+      return "ask-clarification";
+    default:
+      return "call-model";
+  }
+}
+function commitExpectedForIntent(intent) {
+  return intent === "write-fix" || intent === "commit-write";
+}
 var LocalRouterUnavailableError = class extends Error {
   constructor(message) {
     super(message);
     this.name = "LocalRouterUnavailableError";
   }
 };
-function parseLocalRouterPayload(raw) {
+function parseIntentOnly(raw) {
   try {
     const parsed = JSON.parse(raw);
-    if (!ROUTER_INTENTS.includes(parsed.intent)) return null;
-    if (!ROUTER_DECISIONS.includes(parsed.decision)) return null;
-    return parsed;
+    return ROUTER_INTENTS.includes(parsed.intent) ? parsed.intent : null;
   } catch {
     return null;
   }
 }
 function localRouterPrompt(message) {
-  return [
-    "Classify this GitHub PR comment for Kai, a development-only engineering bot.",
-    "Return JSON only with keys: intent, decision, confidence, reason, maxContextTokens, commitExpected.",
-    "Allowed intents: simple-answer, review, write-fix, commit-write, job-candidate, alert, spam-abuse, unsupported.",
-    "Allowed decisions: reply-template, ask-clarification, call-model.",
-    "Never return stop, ignore, meta-template, or needs-input. Those are handled before this classifier.",
-    "Off-topic non-development requests must be spam-abuse + reply-template.",
-    "Imperative development changes must be write-fix or commit-write + call-model + commitExpected true.",
-    "Questions asking if something can/should be done should be simple-answer + call-model + commitExpected false.",
-    `Comment: ${JSON.stringify(message)}`
-  ].join("\n");
+  return `Classify PR comment. Intents: simple-answer|review|write-fix|commit-write|job-candidate|meta-template|spam-abuse|needs-input|stop|alert|unsupported|ignore.
+Rules: "stop"\u2192stop; "who are you"\u2192meta-template; weather/music/off-topic\u2192spam-abuse; empty/vague\u2192needs-input; "commit"/"push"\u2192commit-write; imperative add/fix/update\u2192write-fix; review/bug/risk\u2192review; question\u2192simple-answer.
+Return {"intent":"..."}.
+Comment: ${JSON.stringify(message)}`;
 }
+var ROUTER_GRAMMAR = 'root ::= "{\\"intent\\":\\"" intent "\\"}"\nintent ::= "simple-answer" | "review" | "write-fix" | "commit-write" | "job-candidate" | "meta-template" | "spam-abuse" | "needs-input" | "stop" | "alert" | "unsupported" | "ignore"';
 async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
   const rules = routeEvent(rawMessage, modelTier);
-  if (["stop", "meta-template", "needs-input", "spam-abuse"].includes(rules.intent)) return rules;
+  if (rules.intent === "needs-input" && !rules.normalizedMessage) return rules;
   const url = options?.url ?? process.env.KAI_ROUTER_URL;
   if (!url) {
     if (options?.allowRulesOnly) return rules;
     throw new LocalRouterUnavailableError("local router URL is required before paid model calls");
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 1500);
+  const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 3e3);
+  const started = Date.now();
   try {
     const res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
       method: "POST",
@@ -27735,8 +27705,8 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
         messages: [{ role: "user", content: localRouterPrompt(rules.normalizedMessage) }],
         stream: false,
         temperature: 0,
-        max_tokens: 160,
-        response_format: { type: "json_object" }
+        max_tokens: 20,
+        grammar: ROUTER_GRAMMAR
       }),
       signal: controller.signal
     });
@@ -27745,18 +27715,20 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
     }
     const body = await res.json();
     const content = body.choices?.[0]?.message?.content ?? "";
-    const local = parseLocalRouterPayload(content);
-    if (!local) {
-      throw new LocalRouterUnavailableError("local router returned invalid JSON classification");
+    const intent = parseIntentOnly(content);
+    if (!intent) {
+      throw new LocalRouterUnavailableError("local router returned invalid intent");
     }
+    const elapsedMs = Date.now() - started;
+    const decision = decisionForIntent(intent);
     return {
       ...rules,
-      intent: local.intent,
-      decision: local.decision,
-      confidence: Math.max(0, Math.min(1, Number(local.confidence ?? 0.7))),
-      reason: `local-llm: ${local.reason ?? "classified"}`,
-      maxContextTokens: Number(local.maxContextTokens ?? rules.maxContextTokens),
-      commitExpected: rules.commitExpected || Boolean(local.commitExpected),
+      intent,
+      decision,
+      confidence: 0.8,
+      reason: `local-llm (${elapsedMs}ms)`,
+      commitExpected: commitExpectedForIntent(intent),
+      maxContextTokens: decision === "call-model" ? rules.maxContextTokens : 0,
       source: "local-llm"
     };
   } catch (error2) {
