@@ -27582,6 +27582,84 @@ var Octokit2 = Octokit.plugin(requestLog, legacyRestEndpointMethods, paginateRes
 var import_node_child_process = require("node:child_process");
 var import_node_sqlite = require("node:sqlite");
 var import_node_fs = require("node:fs");
+
+// src/router.ts
+function isMetaQuestion(msg) {
+  return /^(who are you|what are you|how to use|help|what can you do|кто ты|как пользоваться)/i.test(msg);
+}
+function shouldVerifyCommit(message) {
+  if (/\b(commit|push)\b/i.test(message)) return true;
+  const trimmed = message.trim();
+  const isQuestion = /\?$/.test(trimmed) || /^(can|could|should|would|is|are|do|does|what|who|why|how)\b/i.test(trimmed);
+  if (isQuestion) return false;
+  return /\b(fix|add|update|create|patch|refactor|write|change|remove|delete|document|documentation|doc)\b/i.test(trimmed);
+}
+function normalizeWhitespace(message) {
+  return message.replace(/\s+/g, " ").trim();
+}
+function estimateTokensFromChars(text) {
+  return Math.ceil(text.length / 4);
+}
+function routeEvent(rawMessage, modelTier) {
+  const normalized = normalizeWhitespace(rawMessage);
+  const base = (intent, decision, reason, confidence = 0.95) => ({
+    intent,
+    decision,
+    confidence,
+    modelTier,
+    estimatedTokens: estimateTokensFromChars(normalized),
+    estimatedCostUsd: 0,
+    reason,
+    normalizedMessage: normalized,
+    maxContextTokens: 1e4,
+    commitExpected: false
+  });
+  if (!normalized) {
+    return { ...base("needs-input", "ask-clarification", "empty mention", 0.99), maxContextTokens: 0 };
+  }
+  if (/^(stop|cancel|abort|quit)\b/i.test(normalized)) {
+    return { ...base("stop", "stop", "global stop command", 1), maxContextTokens: 0 };
+  }
+  if (isMetaQuestion(normalized)) {
+    return { ...base("meta-template", "reply-template", "meta question handled by template", 0.99), maxContextTokens: 0 };
+  }
+  if (/https?:\/\/\S+\s*$/i.test(normalized) && normalized.split(" ").length <= 3) {
+    return { ...base("needs-input", "ask-clarification", "link-only request needs task", 0.9), maxContextTokens: 0 };
+  }
+  if (/^(fix|do|handle|improve|make better|review everything|check everything)$/i.test(normalized)) {
+    return { ...base("needs-input", "ask-clarification", "task too vague", 0.86), maxContextTokens: 0 };
+  }
+  if (/\b(job|super|sudo|su)\b/i.test(normalized)) {
+    return { ...base("job-candidate", "call-model", "stateful job candidate", 0.82), maxContextTokens: 2e4 };
+  }
+  const commitExpected = shouldVerifyCommit(normalized);
+  if (commitExpected) {
+    const intent = /\b(commit|push)\b/i.test(normalized) ? "commit-write" : "write-fix";
+    return {
+      ...base(intent, "call-model", "imperative write task", 0.9),
+      estimatedTokens: 2e4,
+      estimatedCostUsd: modelTier === "haiku" ? 0.02 : modelTier === "sonnet" ? 0.12 : 0.5,
+      maxContextTokens: 3e4,
+      commitExpected: true
+    };
+  }
+  if (/\b(review|risk|security|issue|bug|remaining)\b/i.test(normalized)) {
+    return {
+      ...base("review", "call-model", "review or analysis request", 0.88),
+      estimatedTokens: 4e4,
+      estimatedCostUsd: modelTier === "haiku" ? 0.04 : modelTier === "sonnet" ? 0.2 : 0.8,
+      maxContextTokens: 6e4
+    };
+  }
+  return {
+    ...base("simple-answer", "call-model", "simple answer request", 0.78),
+    estimatedTokens: 12e3,
+    estimatedCostUsd: modelTier === "haiku" ? 0.01 : modelTier === "sonnet" ? 0.06 : 0.25,
+    maxContextTokens: 15e3
+  };
+}
+
+// src/index.ts
 var AUDIT_DB_PATH = process.env.KAI_AUDIT_DB || "/home/kai/data/kai-audit.db";
 function initAuditDb() {
   try {
@@ -27764,71 +27842,6 @@ function parseModelFromMessage(message) {
   }
   return { model: DEFAULT_MODEL, cleanMessage: message };
 }
-function normalizeWhitespace(message) {
-  return message.replace(/\s+/g, " ").trim();
-}
-function estimateTokensFromChars(text) {
-  return Math.ceil(text.length / 4);
-}
-function routeEvent(rawMessage, modelTier) {
-  const normalized = normalizeWhitespace(rawMessage);
-  const lower = normalized.toLowerCase();
-  const base = (intent, decision, reason, confidence = 0.95) => ({
-    intent,
-    decision,
-    confidence,
-    modelTier,
-    estimatedTokens: estimateTokensFromChars(normalized),
-    estimatedCostUsd: 0,
-    reason,
-    normalizedMessage: normalized,
-    maxContextTokens: 1e4,
-    commitExpected: false
-  });
-  if (!normalized) {
-    return { ...base("needs-input", "ask-clarification", "empty mention", 0.99), maxContextTokens: 0 };
-  }
-  if (/^(stop|cancel|abort|quit)\b/i.test(normalized)) {
-    return { ...base("stop", "stop", "global stop command", 1), maxContextTokens: 0 };
-  }
-  if (isMetaQuestion(normalized)) {
-    return { ...base("meta-template", "reply-template", "meta question handled by template", 0.99), maxContextTokens: 0 };
-  }
-  if (/https?:\/\/\S+\s*$/i.test(normalized) && normalized.split(" ").length <= 3) {
-    return { ...base("needs-input", "ask-clarification", "link-only request needs task", 0.9), maxContextTokens: 0 };
-  }
-  if (/^(fix|do|handle|improve|make better|review everything|check everything)$/i.test(normalized)) {
-    return { ...base("needs-input", "ask-clarification", "task too vague", 0.86), maxContextTokens: 0 };
-  }
-  if (/\b(job|super|sudo|su)\b/i.test(normalized)) {
-    return { ...base("job-candidate", "call-model", "stateful job candidate", 0.82), maxContextTokens: 2e4 };
-  }
-  const commitExpected = shouldVerifyCommit(normalized);
-  if (commitExpected) {
-    const intent = /\b(commit|push)\b/i.test(normalized) ? "commit-write" : "write-fix";
-    return {
-      ...base(intent, "call-model", "imperative write task", 0.9),
-      estimatedTokens: 2e4,
-      estimatedCostUsd: modelTier === "haiku" ? 0.02 : modelTier === "sonnet" ? 0.12 : 0.5,
-      maxContextTokens: 3e4,
-      commitExpected: true
-    };
-  }
-  if (/\b(review|risk|security|issue|bug|remaining)\b/i.test(normalized)) {
-    return {
-      ...base("review", "call-model", "review or analysis request", 0.88),
-      estimatedTokens: 4e4,
-      estimatedCostUsd: modelTier === "haiku" ? 0.04 : modelTier === "sonnet" ? 0.2 : 0.8,
-      maxContextTokens: 6e4
-    };
-  }
-  return {
-    ...base("simple-answer", "call-model", "simple answer request", 0.78),
-    estimatedTokens: 12e3,
-    estimatedCostUsd: modelTier === "haiku" ? 0.01 : modelTier === "sonnet" ? 0.06 : 0.25,
-    maxContextTokens: 15e3
-  };
-}
 function requireClaudeCLI() {
   try {
     (0, import_node_child_process.execSync)("claude --version", { stdio: "pipe", timeout: 5e3 });
@@ -27862,9 +27875,6 @@ To explore: kodif-team/architect \u2014 .claude/CLAUDE.md, service-summaries/, d
 function isArchitectureQuestion(msg) {
   return /architect|infra|service|microservice|system|overview|how.*work|database|schema|stack/i.test(msg);
 }
-function isMetaQuestion(msg) {
-  return /^(who are you|what are you|how to use|help|what can you do|кто ты|как пользоваться)/i.test(msg);
-}
 var META_TEMPLATE = `I'm Kai, the Kodif project assistant. My goal is to help with minimal token spend and provide a good experience for Kodif architecture questions. Usage: write a comment with a task for @kai; for deeper analysis add \`use sonnet\` or \`use opus\`; loop mode (under development) is a sandbox where the agent will work with full permissions, autonomously commit and open PRs.`;
 function buildFooter(modelLabel, rtkSavings, inputTokens, outputTokens, costUsd, numTurns, durationSec, cacheReadTokens = 0) {
   const inK = Math.round(inputTokens / 1e3);
@@ -27886,13 +27896,6 @@ function stripProviderCoAuthorFromHead() {
     core.info("Removing AI provider Co-Authored-By trailer from HEAD commit");
     (0, import_node_child_process.execSync)(`git commit --amend -m ${shellQuote(cleaned)}`, { stdio: "pipe", timeout: 3e4 });
   }
-}
-function shouldVerifyCommit(message) {
-  if (/\b(commit|push)\b/i.test(message)) return true;
-  const trimmed = message.trim();
-  const isQuestion = /\?$/.test(trimmed) || /^(can|could|should|would|is|are|do|does|what|who|why|how)\b/i.test(trimmed);
-  if (isQuestion) return false;
-  return /\b(fix|add|update|create|patch|refactor|write|change|remove|delete|document|documentation|doc)\b/i.test(trimmed);
 }
 function commitVerificationNote(userMessage, beforeHead, branch) {
   if (!shouldVerifyCommit(userMessage) || !beforeHead || !branch) return "";
