@@ -27771,6 +27771,40 @@ function buildFooter(modelLabel, rtkSavings, inputTokens, outputTokens, costUsd,
   const cacheTag = cachePct > 0 ? ` \xB7 cache ${cachePct}%` : "";
   return `Kai \xB7 ${modelLabel} \xB7 [RTK](https://github.com/rtk-ai/rtk) ${rtkSavings}${cacheTag} \xB7 ${inK}K in / ${outK}K out \xB7 $${costUsd.toFixed(2)} \xB7 ${numTurns}t \xB7 ${durationSec}s \xB7 deeper analysis: use sonnet / use opus`;
 }
+function shellQuote(value) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+function gitOutput(command) {
+  return (0, import_node_child_process.execSync)(command, { stdio: "pipe", timeout: 3e4, encoding: "utf-8" }).trim();
+}
+function hasCommitIntent(message) {
+  return /\b(commit|push)\b/i.test(message);
+}
+function commitVerificationNote(userMessage, beforeHead, branch) {
+  if (!hasCommitIntent(userMessage) || !beforeHead || !branch) return "";
+  const quotedBranch = shellQuote(branch);
+  const status = gitOutput("git status --porcelain");
+  if (status) {
+    core.info("Commit requested and worktree is dirty \u2014 committing changes deterministically");
+    (0, import_node_child_process.execSync)("git add -A", { stdio: "pipe", timeout: 3e4 });
+    (0, import_node_child_process.execSync)(`git commit -m ${shellQuote("chore: apply Kai requested changes")}`, {
+      stdio: "pipe",
+      timeout: 3e4
+    });
+  }
+  const afterHead = gitOutput("git rev-parse HEAD");
+  if (afterHead !== beforeHead) {
+    core.info(`Commit requested \u2014 pushing ${afterHead.slice(0, 7)} to ${branch}`);
+    (0, import_node_child_process.execSync)(`git push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 6e4 });
+    return `
+
+**Commit verification:** pushed \`${afterHead.slice(0, 7)}\` to \`${branch}\`.`;
+  }
+  core.warning("Commit requested but no commit was created and worktree is clean");
+  return `
+
+**Commit verification failed:** no file changes or new commit were found after the requested work. Nothing was pushed.`;
+}
 function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, repoFullName) {
   const parts = [
     `Kai, AI code reviewer. Service: repos/${repoFullName.split("/").pop()}. PR: "${prTitle}"`,
@@ -28050,12 +28084,14 @@ ${META_TEMPLATE}
     replyCommentId = reply.id;
     sessionUpdate(auditDb, runId, "analyzing", { replyCommentId });
     let prTitle = "", prBody = "", filesList = "", prCommentsContext = "";
+    let prHeadRef = "", beforeHead = "";
     try {
       await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(1, 2, selectedModel.label));
       sessionUpdate(auditDb, runId, "analyzing");
       const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: issueNumber });
       prTitle = pr.title;
       prBody = pr.body ?? "";
+      prHeadRef = pr.head.ref;
       try {
         (0, import_node_child_process.execSync)(`git config user.name "kodif-ai[bot]" && git config user.email "kodif-ai[bot]@users.noreply.github.com"`, {
           stdio: "pipe",
@@ -28065,12 +28101,13 @@ ${META_TEMPLATE}
           stdio: "pipe",
           timeout: 5e3
         });
-        (0, import_node_child_process.execSync)(`git fetch origin ${pr.head.ref} && git checkout ${pr.head.ref}`, {
+        (0, import_node_child_process.execSync)(`git fetch origin ${shellQuote(pr.head.ref)} && git checkout ${shellQuote(pr.head.ref)}`, {
           stdio: "pipe",
           timeout: 3e4,
           encoding: "utf-8"
         });
-        core.info(`Checked out PR branch: ${pr.head.ref}`);
+        beforeHead = gitOutput("git rev-parse HEAD");
+        core.info(`Checked out PR branch: ${pr.head.ref} at ${beforeHead.slice(0, 7)}`);
       } catch (e) {
         core.warning(`Could not checkout PR branch: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
       }
@@ -28124,6 +28161,15 @@ CLAUDE.md
         runId
       );
       result = r.text;
+      try {
+        result += commitVerificationNote(userMessage, beforeHead, prHeadRef);
+      } catch (e) {
+        const verifyError = e instanceof Error ? e.message.slice(0, 500) : String(e);
+        core.error(`Commit verification failed: ${verifyError}`);
+        result += `
+
+**Commit verification failed:** ${verifyError}`;
+      }
       const durationMs = Date.now() - startTime;
       const rtkPct = r.rtkSavings || "\u2014 %";
       if (!r.rtkSavings || r.rtkSavings === "0.0%") {

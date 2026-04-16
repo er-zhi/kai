@@ -213,6 +213,43 @@ function buildFooter(
   return `Kai · ${modelLabel} · [RTK](https://github.com/rtk-ai/rtk) ${rtkSavings}${cacheTag} · ${inK}K in / ${outK}K out · $${costUsd.toFixed(2)} · ${numTurns}t · ${durationSec}s · deeper analysis: use sonnet / use opus`;
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function gitOutput(command: string): string {
+  return execSync(command, { stdio: "pipe", timeout: 30_000, encoding: "utf-8" }).trim();
+}
+
+function hasCommitIntent(message: string): boolean {
+  return /\b(commit|push)\b/i.test(message);
+}
+
+function commitVerificationNote(userMessage: string, beforeHead: string, branch: string): string {
+  if (!hasCommitIntent(userMessage) || !beforeHead || !branch) return "";
+
+  const quotedBranch = shellQuote(branch);
+  const status = gitOutput("git status --porcelain");
+
+  if (status) {
+    core.info("Commit requested and worktree is dirty — committing changes deterministically");
+    execSync("git add -A", { stdio: "pipe", timeout: 30_000 });
+    execSync(`git commit -m ${shellQuote("chore: apply Kai requested changes")}`, {
+      stdio: "pipe", timeout: 30_000,
+    });
+  }
+
+  const afterHead = gitOutput("git rev-parse HEAD");
+  if (afterHead !== beforeHead) {
+    core.info(`Commit requested — pushing ${afterHead.slice(0, 7)} to ${branch}`);
+    execSync(`git push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 60_000 });
+    return `\n\n**Commit verification:** pushed \`${afterHead.slice(0, 7)}\` to \`${branch}\`.`;
+  }
+
+  core.warning("Commit requested but no commit was created and worktree is clean");
+  return `\n\n**Commit verification failed:** no file changes or new commit were found after the requested work. Nothing was pushed.`;
+}
+
 function buildCLIPrompt(
   userMessage: string, prTitle: string, prBody: string,
   filesList: string, prCommentsContext: string, repoFullName: string,
@@ -526,6 +563,7 @@ async function run() {
 
     // Get PR context
     let prTitle = "", prBody = "", filesList = "", prCommentsContext = "";
+    let prHeadRef = "", beforeHead = "";
 
     try {
       await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(1, 2, selectedModel.label));
@@ -534,6 +572,7 @@ async function run() {
       const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: issueNumber });
       prTitle = pr.title;
       prBody = pr.body ?? "";
+      prHeadRef = pr.head.ref;
 
       try {
         // Configure git for push (bot identity + token auth)
@@ -543,10 +582,11 @@ async function run() {
         execSync(`git remote set-url origin https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git`, {
           stdio: "pipe", timeout: 5000,
         });
-        execSync(`git fetch origin ${pr.head.ref} && git checkout ${pr.head.ref}`, {
+        execSync(`git fetch origin ${shellQuote(pr.head.ref)} && git checkout ${shellQuote(pr.head.ref)}`, {
           stdio: "pipe", timeout: 30_000, encoding: "utf-8",
         });
-        core.info(`Checked out PR branch: ${pr.head.ref}`);
+        beforeHead = gitOutput("git rev-parse HEAD");
+        core.info(`Checked out PR branch: ${pr.head.ref} at ${beforeHead.slice(0, 7)}`);
       } catch (e: unknown) {
         core.warning(`Could not checkout PR branch: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
       }
@@ -590,6 +630,13 @@ async function run() {
       const r = await callClaudeCLIWithHeartbeat(
         anthropicApiKey, selectedModel.id, prompt, maxTurns, heartbeatCtx, auditDb, runId);
       result = r.text;
+      try {
+        result += commitVerificationNote(userMessage, beforeHead, prHeadRef);
+      } catch (e: unknown) {
+        const verifyError = e instanceof Error ? e.message.slice(0, 500) : String(e);
+        core.error(`Commit verification failed: ${verifyError}`);
+        result += `\n\n**Commit verification failed:** ${verifyError}`;
+      }
 
       const durationMs = Date.now() - startTime;
       const rtkPct = r.rtkSavings || "— %";
