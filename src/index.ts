@@ -190,10 +190,10 @@ function isArchitectureQuestion(msg: string): boolean {
 
 function buildCLIPrompt(
   userMessage: string, prTitle: string, prBody: string,
-  filesList: string, prCommentsContext: string,
+  filesList: string, prCommentsContext: string, repoFullName: string,
 ): string {
   const parts = [
-    `Kai, AI code reviewer. PR: "${prTitle}"`,
+    `Kai, AI code reviewer. Repo: ${repoFullName}. PR: "${prTitle}"`,
     prBody ? `Desc: ${prBody.slice(0, 300)}` : "",
     `Files:\n${filesList}`,
   ];
@@ -212,8 +212,8 @@ function buildCLIPrompt(
       `Repo checked out. Use git diff origin/main...HEAD and Read to inspect PROJECT code only.`,
       `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files — these are bot infrastructure, not project code.`,
       `Task: ${userMessage}`,
-      `IMPORTANT: Answer EXACTLY what the user asked. If they ask to "describe the project" — describe files and structure. If they ask for "review" or "security" — do a code review. Do NOT default to security review unless explicitly asked.`,
-      `Rules: concise, markdown, file:line refs, max 50 lines. Don't repeat prior analysis.`,
+      `IMPORTANT: Answer EXACTLY what the user asked. Do NOT default to security review unless explicitly asked.`,
+      `Rules: concise, markdown, always include repo name and file path (e.g. repo/path/file.py:line), max 50 lines. Don't repeat prior analysis.`,
     );
   }
   return parts.filter(Boolean).join("\n");
@@ -514,7 +514,7 @@ async function run() {
         });
       } catch { /* non-critical */ }
 
-      const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext);
+      const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`);
       const maxTurns = getMaxTurns(userMessage, modelTier);
       core.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);
       const heartbeatCtx: HeartbeatContext = {

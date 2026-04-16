@@ -27760,9 +27760,9 @@ To explore: kodif-team/architect \u2014 .claude/CLAUDE.md, service-summaries/, d
 function isArchitectureQuestion(msg) {
   return /architect|infra|service|microservice|system|overview|how.*work|database|schema|stack/i.test(msg);
 }
-function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext) {
+function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, repoFullName) {
   const parts = [
-    `Kai, AI code reviewer. PR: "${prTitle}"`,
+    `Kai, AI code reviewer. Repo: ${repoFullName}. PR: "${prTitle}"`,
     prBody ? `Desc: ${prBody.slice(0, 300)}` : "",
     `Files:
 ${filesList}`
@@ -27783,8 +27783,8 @@ ${prCommentsContext}`);
       `Repo checked out. Use git diff origin/main...HEAD and Read to inspect PROJECT code only.`,
       `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files \u2014 these are bot infrastructure, not project code.`,
       `Task: ${userMessage}`,
-      `IMPORTANT: Answer EXACTLY what the user asked. If they ask to "describe the project" \u2014 describe files and structure. If they ask for "review" or "security" \u2014 do a code review. Do NOT default to security review unless explicitly asked.`,
-      `Rules: concise, markdown, file:line refs, max 50 lines. Don't repeat prior analysis.`
+      `IMPORTANT: Answer EXACTLY what the user asked. Do NOT default to security review unless explicitly asked.`,
+      `Rules: concise, markdown, always include repo name and file path (e.g. repo/path/file.py:line), max 50 lines. Don't repeat prior analysis.`
     );
   }
   return parts.filter(Boolean).join("\n");
@@ -28047,7 +28047,7 @@ CLAUDE.md
         });
       } catch {
       }
-      const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext);
+      const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`);
       const maxTurns = getMaxTurns(userMessage, modelTier);
       core.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);
       const heartbeatCtx = {
