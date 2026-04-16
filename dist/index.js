@@ -27895,15 +27895,10 @@ function runCLIWithHeartbeat(apiKey, modelId, prompt, isRoot, hb, db, runId) {
         const json = JSON.parse(output);
         let rtkSavings = "";
         try {
-          const gainCmd = isRoot ? `su -s /bin/bash kai -c 'rtk gain --json 2>/dev/null || rtk gain 2>/dev/null'` : `rtk gain --json 2>/dev/null || rtk gain 2>/dev/null`;
+          const gainCmd = isRoot ? `su -s /bin/bash kai -c 'rtk gain 2>/dev/null'` : `rtk gain 2>/dev/null`;
           const raw = (0, import_node_child_process.execSync)(gainCmd, { encoding: "utf-8", timeout: 5e3 }).trim();
-          try {
-            const g = JSON.parse(raw);
-            rtkSavings = g.savings_percent ?? g.percent ?? "";
-          } catch {
-            const m = raw.match(/(\d+(?:\.\d+)?)\s*%/);
-            rtkSavings = m ? m[1] + "%" : "";
-          }
+          const m = raw.match(/Tokens saved:.*?\((\d+(?:\.\d+)?)%\)/);
+          rtkSavings = m ? m[1] + "%" : "";
         } catch {
         }
         settled = true;

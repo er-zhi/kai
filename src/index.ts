@@ -329,20 +329,15 @@ function runCLIWithHeartbeat(
       try {
         const json = JSON.parse(output);
 
-        // Get RTK savings
+        // Get RTK savings — parse "Tokens saved: 1.5M (68.2%)" from rtk gain
         let rtkSavings = "";
         try {
           const gainCmd = isRoot
-            ? `su -s /bin/bash kai -c 'rtk gain --json 2>/dev/null || rtk gain 2>/dev/null'`
-            : `rtk gain --json 2>/dev/null || rtk gain 2>/dev/null`;
+            ? `su -s /bin/bash kai -c 'rtk gain 2>/dev/null'`
+            : `rtk gain 2>/dev/null`;
           const raw = execSync(gainCmd, { encoding: "utf-8", timeout: 5000 }).trim();
-          try {
-            const g = JSON.parse(raw);
-            rtkSavings = g.savings_percent ?? g.percent ?? "";
-          } catch {
-            const m = raw.match(/(\d+(?:\.\d+)?)\s*%/);
-            rtkSavings = m ? m[1] + "%" : "";
-          }
+          const m = raw.match(/Tokens saved:.*?\((\d+(?:\.\d+)?)%\)/);
+          rtkSavings = m ? m[1] + "%" : "";
         } catch { /* */ }
 
         settled = true;
