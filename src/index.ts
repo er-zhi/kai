@@ -30,11 +30,16 @@ function hasClaudeCLI(): boolean {
 
 function hasRTK(): boolean {
   try {
-    // Verify it's rtk-ai/rtk (has 'rewrite' command), not the crates.io rtk
-    // Use 'git status' which always has an RTK equivalent (exit 0)
+    const ver = execSync("rtk --version", { stdio: "pipe", timeout: 5000, encoding: "utf-8" }).trim();
+    core.info(`RTK found: ${ver}`);
+    // Verify it's rtk-ai/rtk (has 'rewrite' subcommand)
     execSync("rtk rewrite 'git status'", { stdio: "pipe", timeout: 5000 });
     return true;
-  } catch { return false; }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message.slice(0, 200) : String(e);
+    core.info(`RTK not available: ${msg}`);
+    return false;
+  }
 }
 
 // --- Claude Code CLI execution (preferred — uses RTK) ---
