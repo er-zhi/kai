@@ -27790,7 +27790,7 @@ function spinnerFrame(_tick, elapsed, _modelLabel) {
   const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
   return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...
 
-_Delete this comment to cancel._`;
+_Delete this comment or send new \`@kai\` to cancel._`;
 }
 async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, heartbeat, db, runId) {
   const isRoot = process.getuid?.() === 0;
@@ -28013,6 +28013,7 @@ ${filesList}`;
       footer = `_Add \`ANTHROPIC_API_KEY\` for AI analysis._`;
     } else {
       sessionUpdate(auditDb, runId, "cli-starting");
+      await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(2, 5, selectedModel.label));
       const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext);
       const maxTurns = getMaxTurns(userMessage, modelTier);
       core.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);

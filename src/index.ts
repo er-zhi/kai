@@ -222,7 +222,7 @@ const PHASES = [
 
 function spinnerFrame(_tick: number, elapsed: number, _modelLabel: string): string {
   const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
-  return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...\n\n_Delete this comment to cancel._`;
+  return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...\n\n_Delete this comment or send new \`@kai\` to cancel._`;
 }
 
 interface HeartbeatContext {
@@ -481,6 +481,7 @@ async function run() {
       footer = `_Add \`ANTHROPIC_API_KEY\` for AI analysis._`;
     } else {
       sessionUpdate(auditDb, runId, "cli-starting");
+      await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(2, 5, selectedModel.label));
 
       const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext);
       const maxTurns = getMaxTurns(userMessage, modelTier);
