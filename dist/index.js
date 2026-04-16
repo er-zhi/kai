@@ -33371,6 +33371,23 @@ Anthropic.Models = Models2;
 Anthropic.Beta = Beta;
 
 // src/index.ts
+var MODELS = {
+  haiku: { id: "claude-haiku-4-5-20251001", label: "Haiku", cost: "$0.25/$1.25" },
+  sonnet: { id: "claude-sonnet-4-20250514", label: "Sonnet", cost: "$3/$15" },
+  opus: { id: "claude-opus-4-20250514", label: "Opus", cost: "$15/$75" }
+};
+var DEFAULT_MODEL = "haiku";
+function parseModelFromMessage(message) {
+  const lower = message.toLowerCase();
+  for (const tier of ["opus", "sonnet", "haiku"]) {
+    const pattern = new RegExp(`use\\s+${tier}`, "i");
+    if (pattern.test(lower)) {
+      const cleanMessage = message.replace(pattern, "").trim();
+      return { model: tier, cleanMessage: cleanMessage || "review this PR" };
+    }
+  }
+  return { model: DEFAULT_MODEL, cleanMessage: message };
+}
 async function run() {
   try {
     const trigger = core.getInput("trigger_phrase") || "@kai";
@@ -33407,23 +33424,23 @@ async function run() {
         comment_id: commentId,
         content: "eyes"
       });
-      core.info("Added \u{1F440} reaction");
     } catch {
-      core.warning("Could not add reaction (missing permission?)");
     }
     const idx = commentBody.toLowerCase().indexOf(trigger.toLowerCase());
-    const userMessage = commentBody.slice(idx + trigger.length).trim() || "review this PR";
+    const rawMessage = commentBody.slice(idx + trigger.length).trim() || "review this PR";
+    const { model: modelTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
+    const selectedModel = MODELS[modelTier];
+    core.info(`Model: ${selectedModel.label} (${selectedModel.id}) | Cost: ${selectedModel.cost}/MTok`);
     const { data: reply } = await octokit.issues.createComment({
       owner,
       repo,
       issue_number: issueNumber,
       body: `> @${sender} \u2014 got it
 
-\u23F3 Working on it...
+\u23F3 Working on it... _(${selectedModel.label})_
 
 _Delete this comment to cancel._`
     });
-    core.info(`Created working comment #${reply.id}`);
     let prDiff = "";
     let prTitle = "";
     let prBody = "";
@@ -33436,7 +33453,7 @@ _Delete this comment to cancel._`
         reply.id,
         `> @${sender} \u2014 got it
 
-\u{1F4D6} Reading PR context...
+\u{1F4D6} Reading PR context... _(${selectedModel.label})_
 
 _Delete this comment to cancel._`
       );
@@ -33450,6 +33467,7 @@ _Delete this comment to cancel._`
         per_page: 100
       });
       filesList = files.map((f) => `- ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]`).join("\n");
+      const maxDiff = modelTier === "haiku" ? 3e4 : modelTier === "sonnet" ? 6e4 : 1e5;
       const diffResponse = await octokit.pulls.get({
         owner,
         repo,
@@ -33457,8 +33475,10 @@ _Delete this comment to cancel._`
         mediaType: { format: "diff" }
       });
       prDiff = String(diffResponse.data);
-      if (prDiff.length > 8e4) {
-        prDiff = prDiff.slice(0, 8e4) + "\n\n... (diff truncated)";
+      if (prDiff.length > maxDiff) {
+        prDiff = prDiff.slice(0, maxDiff) + `
+
+... (diff truncated at ${maxDiff} chars)`;
       }
     } catch (e) {
       core.warning(`Could not fetch PR context: ${e instanceof Error ? e.message : e}`);
@@ -33474,28 +33494,29 @@ _Delete this comment to cancel._`
           `> @${sender} \u2014 got it
 
 \u{1F4D6} Reading PR context...
-\u{1F50D} Analyzing with Claude...
+\u{1F50D} Analyzing with Claude ${selectedModel.label}...
 
 _Delete this comment to cancel._`
         );
-        result = await callClaude(anthropicApiKey, userMessage, prTitle, prBody, filesList, prDiff);
+        result = await callClaude(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
+        result += `
+
+_Model: ${selectedModel.label} (${selectedModel.cost}/MTok) \xB7 \`use sonnet\` or \`use opus\` for deeper analysis_`;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         core.error(`Claude API error: ${msg}`);
-        result = `\u26A0\uFE0F Claude API error: \`${msg}\`
-
-PR context loaded. Check \`ANTHROPIC_API_KEY\` secret and API balance.`;
+        result = `\u26A0\uFE0F Claude API error: \`${msg}\``;
       }
     } else {
       result = `\u{1F4CB} **PR: ${prTitle}**
 
-Files changed:
+Files:
 ${filesList}
 
-_Add \`ANTHROPIC_API_KEY\` to repo secrets for AI analysis._`;
+_Add \`ANTHROPIC_API_KEY\` for AI analysis._`;
     }
     if (!await commentExists(octokit, owner, repo, reply.id)) {
-      core.info("Working comment deleted \u2014 cancelled");
+      core.info("Cancelled");
       return;
     }
     await safeUpdate(
@@ -33503,7 +33524,7 @@ _Add \`ANTHROPIC_API_KEY\` to repo secrets for AI analysis._`;
       owner,
       repo,
       reply.id,
-      `> @${sender}: ${userMessage}
+      `> @${sender}: ${rawMessage}
 
 ${result}
 
@@ -33515,10 +33536,10 @@ _Kai (Kodif AI)_`
     if (error2 instanceof Error) core.setFailed(error2.message);
   }
 }
-async function callClaude(apiKey, userMessage, prTitle, prBody, filesList, diff) {
+async function callClaude(apiKey, modelId, userMessage, prTitle, prBody, filesList, diff) {
   const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: modelId,
     max_tokens: 4096,
     system: `You are Kai \u2014 the Kodif AI engineering agent.
 You are reviewing PR: "${prTitle}"
@@ -33538,7 +33559,8 @@ Instructions:
 - Answer the user's question about this PR
 - If asked to review, check for: bugs, security issues, performance, code quality
 - Be concise and actionable \u2014 use markdown
-- Reference specific files and line numbers`,
+- Reference specific files and line numbers
+- Keep responses focused \u2014 avoid unnecessary verbosity`,
     messages: [{ role: "user", content: userMessage }]
   });
   return response.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
