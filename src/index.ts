@@ -235,12 +235,18 @@ function stripProviderCoAuthorFromHead(): void {
   }
 }
 
-function hasCommitIntent(message: string): boolean {
-  return /\b(commit|push)\b/i.test(message);
+function shouldVerifyCommit(message: string): boolean {
+  if (/\b(commit|push)\b/i.test(message)) return true;
+
+  const trimmed = message.trim();
+  const isQuestion = /\?$/.test(trimmed) || /^(can|could|should|would|is|are|do|does|what|who|why|how)\b/i.test(trimmed);
+  if (isQuestion) return false;
+
+  return /\b(fix|add|update|create|patch|refactor|write|change|remove|delete|document|documentation|doc)\b/i.test(trimmed);
 }
 
 function commitVerificationNote(userMessage: string, beforeHead: string, branch: string): string {
-  if (!hasCommitIntent(userMessage) || !beforeHead || !branch) return "";
+  if (!shouldVerifyCommit(userMessage) || !beforeHead || !branch) return "";
 
   const quotedBranch = shellQuote(branch);
   try {
@@ -310,6 +316,7 @@ function buildCLIPrompt(
       `Task: ${userMessage}`,
       `IMPORTANT: Answer EXACTLY what the user asked. Do NOT default to security review unless explicitly asked.`,
       `Rules: concise, markdown, repos/<service>/path/file.py:line refs, max 50 lines. Don't repeat prior analysis.`,
+      `For imperative write tasks (fix/add/update/create/patch/refactor/document), commit and push the change to the PR branch unless the user explicitly asks not to.`,
       `Git commits: NEVER add Co-Authored-By headers or AI provider attribution. Author is already set to kodif-ai[bot].`,
     );
   }
