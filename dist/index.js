@@ -28043,7 +28043,7 @@ ${filesList}`;
       const durationSec = Math.round(durationMs / 1e3);
       const inK = Math.round(r.inputTokens / 1e3);
       const outK = Math.round(r.outputTokens / 1e3);
-      footer = `Kai \xB7 ${selectedModel.label} \xB7 [RTK](https://github.com/rtk-ai/rtk) ${rtkPct} \xB7 ${inK}K/${outK}K \xB7 $${r.costUsd.toFixed(2)} \xB7 ${r.numTurns}t \xB7 ${durationSec}s \xB7 \`use sonnet\` \xB7 \`use opus\``;
+      footer = `Kai \xB7 ${selectedModel.label} \xB7 [RTK](https://github.com/rtk-ai/rtk) ${rtkPct} \xB7 ${inK}K in / ${outK}K out \xB7 $${r.costUsd.toFixed(2)} \xB7 ${r.numTurns}t \xB7 ${durationSec}s \xB7 deeper analysis: use sonnet / use opus`;
       auditLog(auditDb, {
         sender,
         repo: `${owner}/${repo}`,

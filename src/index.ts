@@ -502,7 +502,7 @@ async function run() {
       const durationSec = Math.round(durationMs / 1000);
       const inK = Math.round(r.inputTokens / 1000);
       const outK = Math.round(r.outputTokens / 1000);
-      footer = `Kai · ${selectedModel.label} · [RTK](https://github.com/rtk-ai/rtk) ${rtkPct} · ${inK}K/${outK}K · $${r.costUsd.toFixed(2)} · ${r.numTurns}t · ${durationSec}s · \`use sonnet\` · \`use opus\``;
+      footer = `Kai · ${selectedModel.label} · [RTK](https://github.com/rtk-ai/rtk) ${rtkPct} · ${inK}K in / ${outK}K out · $${r.costUsd.toFixed(2)} · ${r.numTurns}t · ${durationSec}s · deeper analysis: use sonnet / use opus`;
 
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
