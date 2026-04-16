@@ -27578,6 +27578,9 @@ var Octokit2 = Octokit.plugin(requestLog, legacyRestEndpointMethods, paginateRes
   }
 );
 
+// src/index.ts
+var import_node_child_process = require("node:child_process");
+
 // node_modules/@anthropic-ai/sdk/internal/tslib.mjs
 function __classPrivateFieldSet(receiver, state, value, kind, f) {
   if (kind === "m")
@@ -33372,21 +33375,103 @@ Anthropic.Beta = Beta;
 
 // src/index.ts
 var MODELS = {
-  haiku: { id: "claude-haiku-4-5-20251001", label: "Haiku", cost: "$0.25/$1.25" },
-  sonnet: { id: "claude-sonnet-4-20250514", label: "Sonnet", cost: "$3/$15" },
-  opus: { id: "claude-opus-4-20250514", label: "Opus", cost: "$15/$75" }
+  haiku: { id: "claude-haiku-4-5-20251001", label: "Haiku" },
+  sonnet: { id: "claude-sonnet-4-20250514", label: "Sonnet" },
+  opus: { id: "claude-opus-4-20250514", label: "Opus" }
 };
 var DEFAULT_MODEL = "haiku";
 function parseModelFromMessage(message) {
-  const lower = message.toLowerCase();
   for (const tier of ["opus", "sonnet", "haiku"]) {
     const pattern = new RegExp(`use\\s+${tier}`, "i");
-    if (pattern.test(lower)) {
-      const cleanMessage = message.replace(pattern, "").trim();
-      return { model: tier, cleanMessage: cleanMessage || "review this PR" };
+    if (pattern.test(message)) {
+      return { model: tier, cleanMessage: message.replace(pattern, "").trim() || "review this PR" };
     }
   }
   return { model: DEFAULT_MODEL, cleanMessage: message };
+}
+function hasClaudeCLI() {
+  try {
+    (0, import_node_child_process.execSync)("claude --version", { stdio: "pipe", timeout: 5e3 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function hasRTK() {
+  try {
+    (0, import_node_child_process.execSync)("rtk --version", { stdio: "pipe", timeout: 5e3 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function callClaudeCLI(apiKey, modelId, userMessage, prTitle, prBody, filesList, diff) {
+  const rtk = hasRTK();
+  const prefix = rtk ? "rtk proxy --" : "";
+  const prompt = [
+    `You are Kai \u2014 the Kodif AI engineering agent.`,
+    `Review PR: "${prTitle}"`,
+    prBody ? `
+PR description: ${prBody}` : "",
+    `
+Files changed:
+${filesList}`,
+    `
+Diff:
+\`\`\`diff
+${diff}
+\`\`\``,
+    `
+User request: ${userMessage}`,
+    `
+Be concise and actionable. Use markdown. Reference files and line numbers.`
+  ].filter(Boolean).join("\n");
+  const cmd = `${prefix} claude -p --dangerously-skip-permissions --output-format json --max-turns 10 --model ${modelId}`.trim();
+  core.info(`Executing: ${rtk ? "rtk \u2192 " : ""}claude CLI (${modelId})`);
+  const output = (0, import_node_child_process.execSync)(cmd, {
+    input: prompt,
+    env: { ...process.env, ANTHROPIC_API_KEY: apiKey },
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: 3e5,
+    encoding: "utf-8"
+  });
+  const json = JSON.parse(output);
+  return {
+    text: json.result ?? json.content ?? output,
+    costUsd: json.cost_usd ?? 0,
+    numTurns: json.num_turns ?? 1,
+    mode: "cli",
+    rtk
+  };
+}
+async function callClaudeAPI(apiKey, modelId, userMessage, prTitle, prBody, filesList, diff) {
+  const client = new Anthropic({ apiKey });
+  const response = await client.messages.create({
+    model: modelId,
+    max_tokens: 4096,
+    system: `You are Kai \u2014 the Kodif AI engineering agent.
+You are reviewing PR: "${prTitle}"
+${prBody ? `
+PR description: ${prBody}` : ""}
+
+Files changed:
+${filesList}
+
+Full diff:
+\`\`\`diff
+${diff}
+\`\`\`
+
+Be concise and actionable. Use markdown. Reference files and line numbers.`,
+    messages: [{ role: "user", content: userMessage }]
+  });
+  const text = response.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  return {
+    text,
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+    mode: "api"
+  };
 }
 async function run() {
   try {
@@ -33395,10 +33480,7 @@ async function run() {
     const anthropicApiKey = core.getInput("anthropic_api_key");
     const { context } = github;
     const event = context.eventName;
-    let commentBody = "";
-    let commentId = 0;
-    let issueNumber = 0;
-    let sender = "";
+    let commentBody = "", commentId = 0, issueNumber = 0, sender = "";
     if (event === "issue_comment" || event === "pull_request_review_comment") {
       const payload = context.payload;
       commentBody = payload.comment?.body ?? "";
@@ -33406,45 +33488,33 @@ async function run() {
       sender = payload.comment?.user?.login ?? "";
       issueNumber = event === "issue_comment" ? payload.issue?.number ?? 0 : payload.pull_request?.number ?? 0;
     }
-    if (!commentBody.toLowerCase().includes(trigger.toLowerCase())) {
-      core.info("No trigger found, skipping");
-      return;
-    }
-    if (sender.includes("[bot]")) {
-      core.info("Skipping bot comment");
-      return;
-    }
+    if (!commentBody.toLowerCase().includes(trigger.toLowerCase())) return;
+    if (sender.includes("[bot]")) return;
     core.info(`Triggered by @${sender} in #${issueNumber}`);
     const octokit = new Octokit2({ auth: githubToken });
     const { owner, repo } = context.repo;
     try {
-      await octokit.reactions.createForIssueComment({
-        owner,
-        repo,
-        comment_id: commentId,
-        content: "eyes"
-      });
+      await octokit.reactions.createForIssueComment({ owner, repo, comment_id: commentId, content: "eyes" });
     } catch {
     }
     const idx = commentBody.toLowerCase().indexOf(trigger.toLowerCase());
     const rawMessage = commentBody.slice(idx + trigger.length).trim() || "review this PR";
     const { model: modelTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
     const selectedModel = MODELS[modelTier];
-    core.info(`Model: ${selectedModel.label} (${selectedModel.id}) | Cost: ${selectedModel.cost}/MTok`);
+    const useCLI = hasClaudeCLI();
+    const modeLabel = useCLI ? "CLI" + (hasRTK() ? " + RTK" : "") : "API";
+    core.info(`Mode: ${modeLabel} | Model: ${selectedModel.label}`);
     const { data: reply } = await octokit.issues.createComment({
       owner,
       repo,
       issue_number: issueNumber,
       body: `> @${sender} \u2014 got it
 
-\u23F3 Working on it... _(${selectedModel.label})_
+\u23F3 Working on it... _(${selectedModel.label}, ${modeLabel})_
 
 _Delete this comment to cancel._`
     });
-    let prDiff = "";
-    let prTitle = "";
-    let prBody = "";
-    let filesList = "";
+    let prDiff = "", prTitle = "", prBody = "", filesList = "";
     try {
       await safeUpdate(
         octokit,
@@ -33453,38 +33523,31 @@ _Delete this comment to cancel._`
         reply.id,
         `> @${sender} \u2014 got it
 
-\u{1F4D6} Reading PR context... _(${selectedModel.label})_
+\u{1F4D6} Reading PR... _(${selectedModel.label}, ${modeLabel})_
 
 _Delete this comment to cancel._`
       );
       const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: issueNumber });
       prTitle = pr.title;
       prBody = pr.body ?? "";
-      const { data: files } = await octokit.pulls.listFiles({
-        owner,
-        repo,
-        pull_number: issueNumber,
-        per_page: 100
-      });
+      const { data: files } = await octokit.pulls.listFiles({ owner, repo, pull_number: issueNumber, per_page: 100 });
       filesList = files.map((f) => `- ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]`).join("\n");
       const maxDiff = modelTier === "haiku" ? 3e4 : modelTier === "sonnet" ? 6e4 : 1e5;
-      const diffResponse = await octokit.pulls.get({
-        owner,
-        repo,
-        pull_number: issueNumber,
-        mediaType: { format: "diff" }
-      });
-      prDiff = String(diffResponse.data);
-      if (prDiff.length > maxDiff) {
-        prDiff = prDiff.slice(0, maxDiff) + `
-
-... (diff truncated at ${maxDiff} chars)`;
-      }
+      const diffResp = await octokit.pulls.get({ owner, repo, pull_number: issueNumber, mediaType: { format: "diff" } });
+      prDiff = String(diffResp.data);
+      if (prDiff.length > maxDiff) prDiff = prDiff.slice(0, maxDiff) + "\n\n... (truncated)";
     } catch (e) {
-      core.warning(`Could not fetch PR context: ${e instanceof Error ? e.message : e}`);
+      core.warning(`PR context error: ${e instanceof Error ? e.message : e}`);
     }
     let result;
-    if (anthropicApiKey) {
+    let footer;
+    if (!anthropicApiKey) {
+      result = `\u{1F4CB} **PR: ${prTitle}**
+
+Files:
+${filesList}`;
+      footer = `_Add \`ANTHROPIC_API_KEY\` for AI analysis._`;
+    } else {
       try {
         await safeUpdate(
           octokit,
@@ -33493,29 +33556,27 @@ _Delete this comment to cancel._`
           reply.id,
           `> @${sender} \u2014 got it
 
-\u{1F4D6} Reading PR context...
-\u{1F50D} Analyzing with Claude ${selectedModel.label}...
+\u{1F4D6} Reading PR...
+\u{1F50D} Analyzing... _(${selectedModel.label}, ${modeLabel})_
 
 _Delete this comment to cancel._`
         );
-        const response = await callClaude(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
-        const totalTokens = response.inputTokens + response.outputTokens;
-        result = response.text;
-        result += `
-
-_Model: **${selectedModel.label}** \xB7 Tokens: ${response.inputTokens.toLocaleString()} in / ${response.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total) \xB7 \`use sonnet\` or \`use opus\` for deeper analysis_`;
+        if (useCLI) {
+          const r = await callClaudeCLI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
+          result = r.text;
+          footer = `_**${selectedModel.label}** \xB7 CLI mode${r.rtk ? " + RTK" : ""} \xB7 Cost: $${r.costUsd.toFixed(4)} \xB7 ${r.numTurns} turn(s) \xB7 \`use sonnet\` / \`use opus\` for deeper analysis_`;
+        } else {
+          const r = await callClaudeAPI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList, prDiff);
+          const total = r.inputTokens + r.outputTokens;
+          result = r.text;
+          footer = `_**${selectedModel.label}** \xB7 API mode \xB7 ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${total.toLocaleString()}) \xB7 \`use sonnet\` / \`use opus\` for deeper analysis_`;
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        core.error(`Claude API error: ${msg}`);
-        result = `\u26A0\uFE0F Claude API error: \`${msg}\``;
+        core.error(`Claude error: ${msg}`);
+        result = `\u26A0\uFE0F Error: \`${msg.slice(0, 200)}\``;
+        footer = "";
       }
-    } else {
-      result = `\u{1F4CB} **PR: ${prTitle}**
-
-Files:
-${filesList}
-
-_Add \`ANTHROPIC_API_KEY\` for AI analysis._`;
     }
     if (!await commentExists(octokit, owner, repo, reply.id)) {
       core.info("Cancelled");
@@ -33530,6 +33591,8 @@ _Add \`ANTHROPIC_API_KEY\` for AI analysis._`;
 
 ${result}
 
+${footer}
+
 ---
 _Kai (Kodif AI)_`
     );
@@ -33538,49 +33601,15 @@ _Kai (Kodif AI)_`
     if (error2 instanceof Error) core.setFailed(error2.message);
   }
 }
-async function callClaude(apiKey, modelId, userMessage, prTitle, prBody, filesList, diff) {
-  const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
-    model: modelId,
-    max_tokens: 4096,
-    system: `You are Kai \u2014 the Kodif AI engineering agent.
-You are reviewing PR: "${prTitle}"
-
-PR description:
-${prBody || "(no description)"}
-
-Files changed:
-${filesList}
-
-Full diff:
-\`\`\`diff
-${diff}
-\`\`\`
-
-Instructions:
-- Answer the user's question about this PR
-- If asked to review, check for: bugs, security issues, performance, code quality
-- Be concise and actionable \u2014 use markdown
-- Reference specific files and line numbers
-- Keep responses focused \u2014 avoid unnecessary verbosity`,
-    messages: [{ role: "user", content: userMessage }]
-  });
-  const text = response.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
-  return {
-    text,
-    inputTokens: response.usage.input_tokens,
-    outputTokens: response.usage.output_tokens
-  };
-}
-async function safeUpdate(octokit, owner, repo, id, body) {
+async function safeUpdate(o, owner, repo, id, body) {
   try {
-    await octokit.issues.updateComment({ owner, repo, comment_id: id, body });
+    await o.issues.updateComment({ owner, repo, comment_id: id, body });
   } catch {
   }
 }
-async function commentExists(octokit, owner, repo, id) {
+async function commentExists(o, owner, repo, id) {
   try {
-    await octokit.issues.getComment({ owner, repo, comment_id: id });
+    await o.issues.getComment({ owner, repo, comment_id: id });
     return true;
   } catch {
     return false;
