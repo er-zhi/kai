@@ -89,14 +89,22 @@ async function callClaudeCLI(
   // Parse JSON output
   const json = JSON.parse(output);
 
-  // Get RTK savings after the run
+  // Get RTK savings percentage after the run
   let rtkSavings = "";
   if (rtk) {
     try {
       const gainCmd = isRoot
         ? `su -s /bin/bash kai -c 'rtk gain --json 2>/dev/null || rtk gain 2>/dev/null'`
         : `rtk gain --json 2>/dev/null || rtk gain 2>/dev/null`;
-      rtkSavings = execSync(gainCmd, { encoding: "utf-8", timeout: 5000 }).trim();
+      const raw = execSync(gainCmd, { encoding: "utf-8", timeout: 5000 }).trim();
+      // Try to parse JSON for percentage, fall back to regex
+      try {
+        const g = JSON.parse(raw);
+        rtkSavings = g.savings_percent ?? g.percent ?? "";
+      } catch {
+        const m = raw.match(/(\d+(?:\.\d+)?)\s*%/);
+        rtkSavings = m ? m[1] + "%" : raw;
+      }
     } catch { /* */ }
   }
 
@@ -104,8 +112,10 @@ async function callClaudeCLI(
     text: json.result ?? json.content ?? output,
     costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
     numTurns: json.num_turns ?? 1,
-    inputTokens: json.input_tokens ?? json.input_tokens_including_cache ?? 0,
-    outputTokens: json.output_tokens ?? 0,
+    inputTokens: (json.usage?.input_tokens ?? 0)
+      + (json.usage?.cache_read_input_tokens ?? 0)
+      + (json.usage?.cache_creation_input_tokens ?? 0),
+    outputTokens: json.usage?.output_tokens ?? 0,
     mode: "cli",
     rtk,
     rtkSavings,
