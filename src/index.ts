@@ -171,6 +171,8 @@ interface CLIResult {
   numTurns: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   rtkSavings: string;
 }
 
@@ -394,15 +396,19 @@ function runCLIWithHeartbeat(
         }
         if (!resultText) resultText = output;
 
+        const cacheRead = json.usage?.cache_read_input_tokens ?? 0;
+        const cacheWrite = json.usage?.cache_creation_input_tokens ?? 0;
+        const freshInput = json.usage?.input_tokens ?? 0;
+
         settled = true;
         resolve({
           text: resultText,
           costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
           numTurns: json.num_turns ?? 1,
-          inputTokens: (json.usage?.input_tokens ?? 0)
-            + (json.usage?.cache_read_input_tokens ?? 0)
-            + (json.usage?.cache_creation_input_tokens ?? 0),
+          inputTokens: freshInput + cacheRead + cacheWrite,
           outputTokens: json.usage?.output_tokens ?? 0,
+          cacheReadTokens: cacheRead,
+          cacheWriteTokens: cacheWrite,
           rtkSavings,
         });
       } catch (e) {
@@ -575,7 +581,9 @@ async function run() {
       const durationSec = Math.round(durationMs / 1000);
       const inK = Math.round(r.inputTokens / 1000);
       const outK = Math.round(r.outputTokens / 1000);
-      footer = `Kai · ${selectedModel.label} · [RTK](https://github.com/rtk-ai/rtk) ${rtkPct} · ${inK}K in / ${outK}K out · $${r.costUsd.toFixed(2)} · ${r.numTurns}t · ${durationSec}s · deeper analysis: use sonnet / use opus`;
+      const cachePct = r.inputTokens > 0 ? Math.round((r.cacheReadTokens / r.inputTokens) * 100) : 0;
+      const cacheTag = cachePct > 0 ? ` · cache ${cachePct}%` : "";
+      footer = `Kai · ${selectedModel.label} · [RTK](https://github.com/rtk-ai/rtk) ${rtkPct}${cacheTag} · ${inK}K in / ${outK}K out · $${r.costUsd.toFixed(2)} · ${r.numTurns}t · ${durationSec}s · deeper analysis: use sonnet / use opus`;
 
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,

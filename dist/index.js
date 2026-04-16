@@ -27939,13 +27939,18 @@ function runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, hb, db, 
           resultText = `\u26A0\uFE0F Task incomplete (${json.subtype ?? "error"}): reached ${json.num_turns ?? "?"} turns. Ask me to continue or simplify the request.`;
         }
         if (!resultText) resultText = output;
+        const cacheRead = json.usage?.cache_read_input_tokens ?? 0;
+        const cacheWrite = json.usage?.cache_creation_input_tokens ?? 0;
+        const freshInput = json.usage?.input_tokens ?? 0;
         settled = true;
         resolve({
           text: resultText,
           costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
           numTurns: json.num_turns ?? 1,
-          inputTokens: (json.usage?.input_tokens ?? 0) + (json.usage?.cache_read_input_tokens ?? 0) + (json.usage?.cache_creation_input_tokens ?? 0),
+          inputTokens: freshInput + cacheRead + cacheWrite,
           outputTokens: json.usage?.output_tokens ?? 0,
+          cacheReadTokens: cacheRead,
+          cacheWriteTokens: cacheWrite,
           rtkSavings
         });
       } catch (e) {
@@ -28119,7 +28124,9 @@ CLAUDE.md
       const durationSec = Math.round(durationMs / 1e3);
       const inK = Math.round(r.inputTokens / 1e3);
       const outK = Math.round(r.outputTokens / 1e3);
-      footer = `Kai \xB7 ${selectedModel.label} \xB7 [RTK](https://github.com/rtk-ai/rtk) ${rtkPct} \xB7 ${inK}K in / ${outK}K out \xB7 $${r.costUsd.toFixed(2)} \xB7 ${r.numTurns}t \xB7 ${durationSec}s \xB7 deeper analysis: use sonnet / use opus`;
+      const cachePct = r.inputTokens > 0 ? Math.round(r.cacheReadTokens / r.inputTokens * 100) : 0;
+      const cacheTag = cachePct > 0 ? ` \xB7 cache ${cachePct}%` : "";
+      footer = `Kai \xB7 ${selectedModel.label} \xB7 [RTK](https://github.com/rtk-ai/rtk) ${rtkPct}${cacheTag} \xB7 ${inK}K in / ${outK}K out \xB7 $${r.costUsd.toFixed(2)} \xB7 ${r.numTurns}t \xB7 ${durationSec}s \xB7 deeper analysis: use sonnet / use opus`;
       auditLog(auditDb, {
         sender,
         repo: `${owner}/${repo}`,
