@@ -5,7 +5,7 @@ import { execSync, spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { isMetaQuestion, routeEventWithLocalLLM, shouldVerifyCommit, type RouterDecision } from "./router";
-import { templateForRoute } from "./templates";
+import { META_TEMPLATE, templateForRoute } from "./templates";
 
 // --- Audit DB (SQLite, persistent via Docker volume) ---
 
@@ -81,7 +81,7 @@ function sessionStart(db: DatabaseSync, data: {
 function sessionUpdate(db: DatabaseSync, runId: string, phase: string, extra?: { replyCommentId?: number; attempt?: number; status?: string; error?: string }) {
   try {
     const sets = [`phase = ?`, `last_heartbeat = datetime('now')`];
-    const params: unknown[] = [phase];
+    const params: (string | number)[] = [phase];
     if (extra?.replyCommentId) { sets.push(`reply_comment_id = ?`); params.push(extra.replyCommentId); }
     if (extra?.attempt) { sets.push(`attempt = ?`); params.push(extra.attempt); }
     if (extra?.status) { sets.push(`status = ?`); params.push(extra.status); }
