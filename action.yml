@@ -1,0 +1,27 @@
+name: 'Kai (Kodif AI)'
+description: 'AI engineering agent that responds to @kai mentions in PRs and issues'
+author: 'Kodif'
+
+inputs:
+  trigger_phrase:
+    description: 'Trigger phrase to activate Kai'
+    required: false
+    default: '@kai'
+  github_token:
+    description: 'GitHub token for posting comments and reactions'
+    required: false
+    default: ${{ github.token }}
+  app_id:
+    description: 'GitHub App ID (for posting as kai[bot])'
+    required: false
+  app_private_key:
+    description: 'GitHub App private key (for posting as kai[bot])'
+    required: false
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+
+branding:
+  icon: 'cpu'
+  color: 'blue'
