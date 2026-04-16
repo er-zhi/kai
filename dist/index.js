@@ -27765,7 +27765,8 @@ ${filesList}`;
         `> @${sender} \u2014 got it
 
 \u{1F4D6} Reading PR...
-\u{1F50D} Analyzing... _(${selectedModel.label}, ${modeLabel})_
+\u{1F50D} Analyzing with **${selectedModel.label}**...
+\u2699\uFE0F ${modeLabel}
 
 _Delete this comment to cancel._`
       );
@@ -27773,7 +27774,7 @@ _Delete this comment to cancel._`
       result = r.text;
       const totalTokens = r.inputTokens + r.outputTokens;
       const rtkPct = r.rtkSavings || "\u2014 %";
-      footer = `RTK saves ${rtkPct} | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total) $${r.costUsd.toFixed(4)} \xB7 ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
+      footer = `**${selectedModel.label}** | RTK saves ${rtkPct} | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total) $${r.costUsd.toFixed(4)} \xB7 ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
     }
     if (!await commentExists(octokit, owner, repo, replyCommentId)) {
       core.info("Cancelled");
@@ -27830,12 +27831,23 @@ async function safeUpdate(o, owner, repo, id, body) {
   }
 }
 async function commentExists(o, owner, repo, id) {
-  try {
-    await o.issues.getComment({ owner, repo, comment_id: id });
-    return true;
-  } catch {
-    return false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await o.issues.getComment({ owner, repo, comment_id: id });
+      return true;
+    } catch (err) {
+      const status = err?.status ?? 0;
+      if (status === 404) return false;
+      if (status >= 500 && attempt < 2) {
+        core.warning(`commentExists: GitHub ${status}, retry ${attempt + 1}/3`);
+        await new Promise((r) => setTimeout(r, 2e3));
+        continue;
+      }
+      core.warning(`commentExists: unexpected error (${status}), assuming exists`);
+      return true;
+    }
   }
+  return true;
 }
 run();
 /*! Bundled license information:

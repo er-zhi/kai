@@ -219,14 +219,14 @@ async function run() {
       footer = `_Add \`ANTHROPIC_API_KEY\` for AI analysis._`;
     } else {
       await safeUpdate(octokit, owner, repo, replyCommentId,
-        `> @${sender} — got it\n\n📖 Reading PR...\n🔍 Analyzing... _(${selectedModel.label}, ${modeLabel})_\n\n_Delete this comment to cancel._`);
+        `> @${sender} — got it\n\n📖 Reading PR...\n🔍 Analyzing with **${selectedModel.label}**...\n⚙️ ${modeLabel}\n\n_Delete this comment to cancel._`);
 
       const r = await callClaudeCLI(anthropicApiKey, selectedModel.id, userMessage, prTitle, prBody, filesList);
       result = r.text;
 
       const totalTokens = r.inputTokens + r.outputTokens;
       const rtkPct = r.rtkSavings || "— %";
-      footer = `RTK saves ${rtkPct} | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total) $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
+      footer = `**${selectedModel.label}** | RTK saves ${rtkPct} | Tokens: ${r.inputTokens.toLocaleString()} in / ${r.outputTokens.toLocaleString()} out (${totalTokens.toLocaleString()} total) $${r.costUsd.toFixed(4)} · ${r.numTurns} turn(s) | use sonnet or use opus for deeper analysis`;
     }
 
     if (!(await commentExists(octokit, owner, repo, replyCommentId))) {
@@ -269,7 +269,25 @@ async function safeUpdate(o: Octokit, owner: string, repo: string, id: number, b
 }
 
 async function commentExists(o: Octokit, owner: string, repo: string, id: number): Promise<boolean> {
-  try { await o.issues.getComment({ owner, repo, comment_id: id }); return true; } catch { return false; }
+  // Retry on 5xx — don't treat transient GitHub errors as "comment deleted"
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await o.issues.getComment({ owner, repo, comment_id: id });
+      return true;
+    } catch (err: unknown) {
+      const status = (err as any)?.status ?? 0;
+      if (status === 404) return false; // actually deleted
+      if (status >= 500 && attempt < 2) {
+        core.warning(`commentExists: GitHub ${status}, retry ${attempt + 1}/3`);
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+      // Unknown error — assume exists (don't cancel work due to flaky API)
+      core.warning(`commentExists: unexpected error (${status}), assuming exists`);
+      return true;
+    }
+  }
+  return true;
 }
 
 run();
