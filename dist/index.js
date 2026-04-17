@@ -28839,17 +28839,10 @@ var PRICING_USD_PER_MILLION = {
   sonnet: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   opus: { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 }
 };
-function requiredNumberEnv(name) {
-  const raw = process.env[name];
-  if (!raw || !raw.trim()) throw new Error(`Missing required env: ${name}`);
-  const value = Number(raw);
-  if (!Number.isFinite(value)) throw new Error(`Invalid number for ${name}: ${raw}`);
-  return value;
-}
 var MAX_COST_USD_BY_TIER = {
-  haiku: requiredNumberEnv("KAI_MAX_COST_USD_HAIKU"),
-  sonnet: requiredNumberEnv("KAI_MAX_COST_USD_SONNET"),
-  opus: requiredNumberEnv("KAI_MAX_COST_USD_OPUS")
+  haiku: 0.05,
+  sonnet: 0.5,
+  opus: 2
 };
 function isShortAnswerRequest(message) {
   return /\b(one\s+(?:sentence|line|word|paragraph)|1\s+sentence|single\s+sentence|briefly|tl;?\s*dr|in\s+(?:a\s+)?(?:word|sentence|line)|short\s+answer|yes\/no|quick(?:ly)?)\b/i.test(message);
@@ -28884,8 +28877,8 @@ function disallowedToolsFor(userMessage) {
   if (!isShortAnswerRequest(userMessage)) return [];
   return ["Read", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"];
 }
-var MAX_PROMPT_TOKENS = requiredNumberEnv("KAI_MAX_PROMPT_TOKENS");
-var SHORT_ANSWER_MAX_INPUT_TOKENS = requiredNumberEnv("KAI_SHORT_ANSWER_MAX_INPUT_TOKENS");
+var MAX_PROMPT_TOKENS = 5e4;
+var SHORT_ANSWER_MAX_INPUT_TOKENS = 6e3;
 function preflightBudget(userMessage, promptTokens, tier) {
   if (promptTokens > MAX_PROMPT_TOKENS) {
     return { allowed: false, reason: `prompt ${promptTokens} tokens > hard ceiling ${MAX_PROMPT_TOKENS}` };
