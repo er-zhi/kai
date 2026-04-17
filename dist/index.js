@@ -27749,7 +27749,7 @@ function mergeCompressedChunks(chunks, payload) {
   return parts.join("\n\n").trim();
 }
 async function compressPromptWithQwen(prompt, userMessage, modelTier, config) {
-  if (!config?.model) throw new LocalCompressorUnavailableError("KAI_COMPRESSOR_MODEL is required");
+  if (!config?.model) throw new LocalCompressorUnavailableError("local compressor model is required");
   if (config.timeoutMs == null) throw new LocalCompressorUnavailableError("KAI_COMPRESSOR_TIMEOUT_MS is required");
   const started = Date.now();
   const rawTokens = estimateTokens(prompt);
@@ -27836,6 +27836,7 @@ function createDynamicContextPack(input) {
   const prMetaPath = (0, import_node_path.join)(baseDir, "pr-meta.txt");
   const changedFilesPath = (0, import_node_path.join)(baseDir, "changed-files.txt");
   const commentsPath = (0, import_node_path.join)(baseDir, "comments.txt");
+  const prDiffPath = (0, import_node_path.join)(baseDir, "pr-diff.diff");
   const architecturePath = (0, import_node_path.join)(baseDir, "architecture.txt");
   const historyPath = (0, import_node_path.join)(baseDir, "history.jsonl");
   const manifestPath = (0, import_node_path.join)(baseDir, "manifest.json");
@@ -27853,6 +27854,7 @@ function createDynamicContextPack(input) {
   ].join("\n"), "utf-8");
   (0, import_node_fs.writeFileSync)(changedFilesPath, input.filesList || "(none)", "utf-8");
   (0, import_node_fs.writeFileSync)(commentsPath, input.prCommentsContext || "(none)", "utf-8");
+  (0, import_node_fs.writeFileSync)(prDiffPath, input.prDiffDigest || "(none)", "utf-8");
   if (input.architectureContext) {
     (0, import_node_fs.writeFileSync)(architecturePath, input.architectureContext, "utf-8");
   }
@@ -27871,6 +27873,7 @@ function createDynamicContextPack(input) {
       task: taskPath,
       prMeta: prMetaPath,
       changedFiles: changedFilesPath,
+      prDiff: prDiffPath,
       comments: commentsPath,
       architecture: input.architectureContext ? architecturePath : null,
       history: historyPath
@@ -27890,7 +27893,7 @@ function appendContextHistory(historyPath, event, payload) {
   })}
 `, "utf-8");
 }
-function buildDynamicPromptFromManifest(userMessage, repoFullName, route, manifestPath, isArchitectureTask) {
+function buildDynamicPromptFromManifest(userMessage, repoFullName, route, manifestPath, isArchitectureTask, prDiffDigest = "") {
   const core4 = [
     `Kai, AI code reviewer. Service: repos/${repoFullName.split("/").pop()}.`,
     `Task: ${userMessage}`,
@@ -27899,10 +27902,16 @@ function buildDynamicPromptFromManifest(userMessage, repoFullName, route, manife
     "Optimization chain: RTK command rewrites + local context compression.",
     "Read only the necessary context files from manifest (start with task + changed-files + pr-meta)."
   ];
+  if (prDiffDigest) {
+    core4.push(`Full PR diff (pre-fetched via GitHub API \u2014 do NOT re-run \`git diff\`):
+\`\`\`diff
+${prDiffDigest}
+\`\`\``);
+  }
   if (isArchitectureTask) {
     core4.push("For architecture requests, read the architecture context file from manifest and focus on system/service relations.");
   } else {
-    core4.push("For code tasks, inspect changed files and git diff first; then fetch extra context lazily.");
+    core4.push("For code tasks, inspect the embedded PR diff first; then fetch extra context lazily only when the diff is insufficient.");
     core4.push("Ignore bot/infrastructure files unless explicitly requested (.github/, .claude/, CLAUDE.md, workflow yml).");
   }
   core4.push("Keep response concise markdown with concrete file references and avoid repeating prior analysis.");
@@ -27932,6 +27941,9 @@ function normalizeWhitespace(message) {
 }
 function isMetaQuestion(msg) {
   return /^(who are you|what are you|how to use|help|what can you do|кто ты|как пользоваться)/i.test(msg);
+}
+function isReviewRequest(msg) {
+  return /\b(review|security review|analy[sz]e|vulnerabilit|owasp|csrf|sql injection|jwt|auth|authentication|rate limiting|code locations|fixes required|token lifecycle|replay attacks?)\b/i.test(msg);
 }
 function shouldVerifyCommit(message) {
   if (/\b(commit|push)\b/i.test(message)) return true;
@@ -28047,6 +28059,12 @@ function decisionForIntent(intent) {
 function commitExpectedForIntent(intent) {
   return intent === "write-fix" || intent === "commit-write";
 }
+function guardRouterIntent(intent, message) {
+  if ((intent === "meta-template" || intent === "simple-answer") && isReviewRequest(message)) {
+    return "review";
+  }
+  return intent;
+}
 var LocalRouterUnavailableError = class extends Error {
   constructor(message) {
     super(message);
@@ -28072,7 +28090,7 @@ var TIER_RESPONSE_FORMAT = {
   }
 };
 async function suggestTierWithLocalLLM(message, options) {
-  if (!options.model) throw new Error("KAI_ROUTER_MODEL is required");
+  if (!options.model) throw new Error("local router model is required");
   if (options.timeoutMs == null) throw new Error("KAI_ROUTER_TIMEOUT_MS is required");
   const signal = AbortSignal.timeout(options.timeoutMs);
   try {
@@ -28161,7 +28179,7 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
   }
   if (!options) throw new LocalRouterUnavailableError("router options are required");
   const model = options.model;
-  if (!model) throw new LocalRouterUnavailableError("KAI_ROUTER_MODEL is required");
+  if (!model) throw new LocalRouterUnavailableError("local router model is required");
   if (options.timeoutMs == null) throw new Error("router timeout is required");
   const timeoutMs = options.timeoutMs;
   const messages = localRouterMessages(rules.normalizedMessage);
@@ -28171,7 +28189,7 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
   for (const delay of delaysMs) {
     if (delay) await new Promise((r) => setTimeout(r, delay));
     try {
-      const intent = await callRouterOnce(url, model, messages, timeoutMs);
+      const intent = guardRouterIntent(await callRouterOnce(url, model, messages, timeoutMs), rules.normalizedMessage);
       const elapsedMs = Date.now() - started;
       const decision = decisionForIntent(intent);
       return {
@@ -28254,7 +28272,7 @@ var FILE_FOCUS_RESPONSE_FORMAT = {
 async function selectRelevantFiles(userMessage, filesList, config) {
   if (config.maxFiles == null) throw new Error("file-focus maxFiles is required");
   if (config.timeoutMs == null) throw new Error("file-focus timeoutMs is required");
-  if (!config.model) throw new Error("KAI_FILE_FOCUS_MODEL is required");
+  if (!config.model) throw new Error("local file-focus model is required");
   const maxFiles = config.maxFiles;
   const files = filesList.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
   if (files.length <= maxFiles) return files;
@@ -28363,9 +28381,7 @@ function loadConfig() {
   return {
     auditDbPath: env("KAI_AUDIT_DB"),
     routerUrl: envOr("KAI_ROUTER_URL", "http://kai-router:8080"),
-    routerModel: envOr("KAI_ROUTER_MODEL", "LFM2-350M"),
     compressorUrl: envOr("KAI_COMPRESSOR_URL", "http://kai-compressor:8081"),
-    compressorModel: envOr("KAI_COMPRESSOR_MODEL", "LFM2-350M"),
     compressorTimeoutMs: num("KAI_COMPRESSOR_TIMEOUT_MS", 1, 12e4, 1500),
     compressorMinQueryTokens: num("KAI_COMPRESSOR_MIN_QUERY_TOKENS", 0, 1e6, 10),
     compressorMinPromptTokens: num("KAI_COMPRESSOR_MIN_PROMPT_TOKENS", 0, 1e6, 2200),
@@ -28381,7 +28397,6 @@ function loadConfig() {
     runnerAllowNoToken,
     runnerToken,
     routerGitContext: env("KAI_ROUTER_GIT_CONTEXT"),
-    fileFocusModel: envOr("KAI_FILE_FOCUS_MODEL", "LFM2-350M"),
     routerTimeoutMs: num("KAI_ROUTER_TIMEOUT_MS", 1, 12e4, 5e3),
     logLevel: logLevel("KAI_LOG_LEVEL")
   };
@@ -29149,6 +29164,44 @@ async function safeUpdate(o, owner, repo, id, body) {
   }
 }
 
+// src/pr-diff.ts
+function truncateDiffDigest(diff, maxChars) {
+  if (diff.length <= maxChars) return diff;
+  const head = diff.slice(0, Math.floor(maxChars * 0.7));
+  const tail = diff.slice(-Math.floor(maxChars * 0.2));
+  return `${head}
+... [truncated ${diff.length - maxChars} chars] ...
+${tail}`;
+}
+function buildPullRequestDiffDigest(files, maxChars) {
+  const chunks = files.map((file) => {
+    const status = file.status ?? "modified";
+    const oldName = file.previous_filename ?? file.filename;
+    const additions = file.additions ?? 0;
+    const deletions = file.deletions ?? 0;
+    const header = [
+      `diff --git a/${oldName} b/${file.filename}`,
+      `# status=${status} additions=${additions} deletions=${deletions}`
+    ];
+    if (!file.patch) {
+      header.push("# patch unavailable from GitHub API for this file");
+      return header.join("\n");
+    }
+    return `${header.join("\n")}
+${file.patch}`;
+  });
+  return truncateDiffDigest(chunks.join("\n\n"), maxChars);
+}
+async function getPullRequestDiffDigest(octokit, owner, repo, pullNumber, maxChars) {
+  const files = await octokit.paginate(octokit.pulls.listFiles, {
+    owner,
+    repo,
+    pull_number: pullNumber,
+    per_page: 100
+  });
+  return buildPullRequestDiffDigest(files, maxChars);
+}
+
 // src/index.ts
 async function getPRCommentsContext(octokit, owner, repo, issueNumber, maxComments = 5, maxChars = 200) {
   try {
@@ -29177,6 +29230,7 @@ var MODELS = {
   sonnet: { id: "claude-sonnet-4-20250514", label: "Sonnet" },
   opus: { id: "claude-opus-4-20250514", label: "Opus" }
 };
+var LOCAL_LLM_MODEL = "LFM2-350M";
 var KODIF_ARCH_CONTEXT = `
 Kodif platform: 33+ microservices. Architecture repo: kodif-team/architect
 DBs: executor-db (kodif, PostgreSQL 13), chat-db (chat, PostgreSQL 15), ml-db (zendesk-json-db-pgadmin, PostgreSQL 13). All sync to BigQuery (kodif-51ce2, public dataset).
@@ -29201,7 +29255,7 @@ function logErrorToSentry(error2, extra) {
 function gitOutput(command) {
   return (0, import_node_child_process2.execSync)(command, { stdio: "pipe", timeout: 3e4, encoding: "utf-8" }).trim();
 }
-var MAX_DIFF_CHARS = Number(process.env.KAI_MAX_DIFF_CHARS || 12e3);
+var MAX_DIFF_CHARS = 12e3;
 function getPrDiffDigest() {
   try {
     const diff = (0, import_node_child_process2.execSync)("git diff origin/main...HEAD --no-color --unified=3", {
@@ -29211,12 +29265,7 @@ function getPrDiffDigest() {
       maxBuffer: 8 * 1024 * 1024
     });
     if (!diff.trim()) return "";
-    if (diff.length <= MAX_DIFF_CHARS) return diff;
-    const head = diff.slice(0, Math.floor(MAX_DIFF_CHARS * 0.7));
-    const tail = diff.slice(-Math.floor(MAX_DIFF_CHARS * 0.2));
-    return `${head}
-... [truncated ${diff.length - MAX_DIFF_CHARS} chars] ...
-${tail}`;
+    return truncateDiffDigest(diff, MAX_DIFF_CHARS);
   } catch (e) {
     core3.warning(`diff digest failed: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
     return "";
@@ -29356,9 +29405,9 @@ async function run() {
     const githubToken = core3.getInput("github_token");
     const anthropicApiKey = core3.getInput("anthropic_api_key");
     const routerUrl = core3.getInput("router_url") || cfg.routerUrl;
-    const routerModel = core3.getInput("router_model") || cfg.routerModel;
+    const routerModel = LOCAL_LLM_MODEL;
     const compressorUrl = core3.getInput("compressor_url") || cfg.compressorUrl;
-    const compressorModel = core3.getInput("compressor_model") || cfg.compressorModel;
+    const compressorModel = LOCAL_LLM_MODEL;
     const compressorDisabled = (core3.getInput("compressor_disable") || process.env.KAI_COMPRESSOR_DISABLE || "false").toLowerCase() === "true";
     const compressorMinQueryTokens = Number(core3.getInput("compressor_min_query_tokens") || cfg.compressorMinQueryTokens);
     const compressorMinPromptTokens = Number(core3.getInput("compressor_min_prompt_tokens") || cfg.compressorMinPromptTokens);
@@ -29560,7 +29609,7 @@ ${template}
     });
     replyCommentId = reply.id;
     sessionUpdate(auditDb, runId, "analyzing", { replyCommentId });
-    let prTitle = "", prBody = "", filesList = "", prCommentsContext = "";
+    let prTitle = "", prBody = "", filesList = "", prCommentsContext = "", prDiffDigest = "";
     let prHeadRef = "", beforeHead = "";
     let contextManifestPath = "";
     let contextHistoryPath = "";
@@ -29587,6 +29636,8 @@ ${template}
       }
       const { data: files } = await octokit.pulls.listFiles({ owner, repo, pull_number: issueNumber, per_page: 100 });
       filesList = files.map((f) => `${f.filename} +${f.additions}/-${f.deletions}`).join("\n");
+      prDiffDigest = await getPullRequestDiffDigest(octokit, owner, repo, issueNumber, MAX_DIFF_CHARS);
+      if (prDiffDigest) core3.info(`PR API diff digest attached: ${prDiffDigest.length} chars`);
       const commentWindow = route.intent === "simple-answer" ? 2 : route.commitExpected ? 3 : 5;
       const commentChars = route.intent === "simple-answer" ? 160 : 220;
       prCommentsContext = await getPRCommentsContext(octokit, owner, repo, issueNumber, commentWindow, commentChars);
@@ -29607,6 +29658,7 @@ ${template}
         prBody,
         filesList,
         prCommentsContext,
+        prDiffDigest,
         repoFullName: `${owner}/${repo}`,
         architectureContext: isArchitectureQuestion(userMessage) ? KODIF_ARCH_CONTEXT : void 0
       });
@@ -29660,14 +29712,17 @@ ${filesList}`;
           core3.warning(`File focus failed: ${e}`);
         }
       }
-      const prDiffDigest = beforeHead ? getPrDiffDigest() : "";
-      if (prDiffDigest) core3.info(`PR diff digest attached: ${prDiffDigest.length} chars`);
+      if (!prDiffDigest && beforeHead) {
+        prDiffDigest = getPrDiffDigest();
+        if (prDiffDigest) core3.info(`Local PR diff digest attached: ${prDiffDigest.length} chars`);
+      }
       const prompt = contextManifestPath ? buildDynamicPromptFromManifest(
         userMessage,
         `${owner}/${repo}`,
         route,
         contextManifestPath,
-        isArchitectureQuestion(userMessage)
+        isArchitectureQuestion(userMessage),
+        prDiffDigest
       ) : buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route, focusedFiles, prDiffDigest);
       const cached = lookupCachedReply(auditDb, prompt, `${owner}/${repo}`, issueNumber);
       if (cached) {

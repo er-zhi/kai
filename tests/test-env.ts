@@ -19,6 +19,7 @@ export function applyTestEnv(file = ".env.test"): void {
   const path = resolve(process.cwd(), file);
   const env = parseEnv(readFileSync(path, "utf8"));
   for (const [key, value] of Object.entries(env)) {
+    if (process.env[key] != null) continue;
     process.env[key] = value;
   }
 }

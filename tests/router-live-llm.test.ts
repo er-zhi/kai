@@ -6,11 +6,10 @@ import { routeEventWithLocalLLM } from "../dist/router.js";
 applyTestEnv();
 
 const routerUrl = process.env.KAI_ROUTER_URL;
-const routerModel = process.env.KAI_ROUTER_MODEL;
+const routerModel = "LFM2-350M";
 
 test("classifies through a live local LLM router", { skip: !routerUrl }, async () => {
   assert(routerUrl);
-  assert(routerModel);
   const route = await routeEventWithLocalLLM("add README docs", "haiku", {
     url: routerUrl,
     model: routerModel,

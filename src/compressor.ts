@@ -210,7 +210,7 @@ export async function compressPromptWithQwen(
   modelTier: string,
   config?: CompressionConfig,
 ): Promise<CompressionResult> {
-  if (!config?.model) throw new LocalCompressorUnavailableError("KAI_COMPRESSOR_MODEL is required");
+  if (!config?.model) throw new LocalCompressorUnavailableError("local compressor model is required");
   if (config.timeoutMs == null) throw new LocalCompressorUnavailableError("KAI_COMPRESSOR_TIMEOUT_MS is required");
   const started = Date.now();
   const rawTokens = estimateTokens(prompt);

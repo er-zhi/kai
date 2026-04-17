@@ -1,9 +1,7 @@
 export type Config = {
   auditDbPath: string;
   routerUrl: string;
-  routerModel: string;
   compressorUrl: string;
-  compressorModel: string;
   compressorTimeoutMs: number;
   compressorMinQueryTokens: number;
   compressorMinPromptTokens: number;
@@ -19,7 +17,6 @@ export type Config = {
   runnerAllowNoToken: boolean;
   runnerToken?: string;
   routerGitContext?: string;
-  fileFocusModel: string;
   routerTimeoutMs: number;
   logLevel: "debug" | "info" | "warn" | "error";
 };
@@ -80,9 +77,7 @@ export function loadConfig(): Config {
   return {
     auditDbPath: env("KAI_AUDIT_DB"),
     routerUrl: envOr("KAI_ROUTER_URL", "http://kai-router:8080"),
-    routerModel: envOr("KAI_ROUTER_MODEL", "LFM2-350M"),
     compressorUrl: envOr("KAI_COMPRESSOR_URL", "http://kai-compressor:8081"),
-    compressorModel: envOr("KAI_COMPRESSOR_MODEL", "LFM2-350M"),
     compressorTimeoutMs: num("KAI_COMPRESSOR_TIMEOUT_MS", 1, 120_000, 1_500),
     compressorMinQueryTokens: num("KAI_COMPRESSOR_MIN_QUERY_TOKENS", 0, 1_000_000, 10),
     compressorMinPromptTokens: num("KAI_COMPRESSOR_MIN_PROMPT_TOKENS", 0, 1_000_000, 2_200),
@@ -98,7 +93,6 @@ export function loadConfig(): Config {
     runnerAllowNoToken,
     runnerToken,
     routerGitContext: env("KAI_ROUTER_GIT_CONTEXT"),
-    fileFocusModel: envOr("KAI_FILE_FOCUS_MODEL", "LFM2-350M"),
     routerTimeoutMs: num("KAI_ROUTER_TIMEOUT_MS", 1, 120_000, 5_000),
     logLevel: logLevel("KAI_LOG_LEVEL"),
   };

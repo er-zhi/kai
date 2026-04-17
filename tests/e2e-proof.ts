@@ -102,7 +102,7 @@ async function main() {
   ];
   for (const { task, hint } of tasks) {
     const tier = await suggestTierWithLocalLLM(task, {
-      url: routerUrl, model: process.env.KAI_ROUTER_MODEL!, timeoutMs: 5000,
+      url: routerUrl, model: "LFM2-350M", timeoutMs: 5000,
     });
     console.log(`  task="${task.slice(0, 50)}..."  →  tier=${tier}  (expected ${hint})`);
     assert.ok(tier === null || ["haiku", "sonnet", "opus"].includes(tier));

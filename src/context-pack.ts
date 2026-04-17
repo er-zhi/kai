@@ -15,6 +15,7 @@ type ContextPackInput = {
   filesList: string;
   prCommentsContext: string;
   repoFullName: string;
+  prDiffDigest?: string;
   architectureContext?: string;
 };
 
@@ -37,6 +38,7 @@ export function createDynamicContextPack(input: ContextPackInput): DynamicContex
   const prMetaPath = join(baseDir, "pr-meta.txt");
   const changedFilesPath = join(baseDir, "changed-files.txt");
   const commentsPath = join(baseDir, "comments.txt");
+  const prDiffPath = join(baseDir, "pr-diff.diff");
   const architecturePath = join(baseDir, "architecture.txt");
   const historyPath = join(baseDir, "history.jsonl");
   const manifestPath = join(baseDir, "manifest.json");
@@ -57,6 +59,7 @@ export function createDynamicContextPack(input: ContextPackInput): DynamicContex
 
   writeFileSync(changedFilesPath, input.filesList || "(none)", "utf-8");
   writeFileSync(commentsPath, input.prCommentsContext || "(none)", "utf-8");
+  writeFileSync(prDiffPath, input.prDiffDigest || "(none)", "utf-8");
 
   if (input.architectureContext) {
     writeFileSync(architecturePath, input.architectureContext, "utf-8");
@@ -77,6 +80,7 @@ export function createDynamicContextPack(input: ContextPackInput): DynamicContex
       task: taskPath,
       prMeta: prMetaPath,
       changedFiles: changedFilesPath,
+      prDiff: prDiffPath,
       comments: commentsPath,
       architecture: input.architectureContext ? architecturePath : null,
       history: historyPath,
@@ -104,6 +108,7 @@ export function buildDynamicPromptFromManifest(
   route: RouterDecision,
   manifestPath: string,
   isArchitectureTask: boolean,
+  prDiffDigest = "",
 ): string {
   const core = [
     `Kai, AI code reviewer. Service: repos/${repoFullName.split("/").pop()}.`,
@@ -114,10 +119,14 @@ export function buildDynamicPromptFromManifest(
     "Read only the necessary context files from manifest (start with task + changed-files + pr-meta).",
   ];
 
+  if (prDiffDigest) {
+    core.push(`Full PR diff (pre-fetched via GitHub API — do NOT re-run \`git diff\`):\n\`\`\`diff\n${prDiffDigest}\n\`\`\``);
+  }
+
   if (isArchitectureTask) {
     core.push("For architecture requests, read the architecture context file from manifest and focus on system/service relations.");
   } else {
-    core.push("For code tasks, inspect changed files and git diff first; then fetch extra context lazily.");
+    core.push("For code tasks, inspect the embedded PR diff first; then fetch extra context lazily only when the diff is insufficient.");
     core.push("Ignore bot/infrastructure files unless explicitly requested (.github/, .claude/, CLAUDE.md, workflow yml).");
   }
 

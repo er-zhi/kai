@@ -17,17 +17,9 @@ inputs:
   router_url:
     description: 'Required local LLM router URL (OpenAI-compatible /v1/chat/completions) before any paid model call, for example http://localhost:11434'
     required: false
-  router_model:
-    description: 'Local model used for cheap event filtering'
-    required: false
-    default: 'LFM2-350M'
   compressor_url:
     description: 'Optional local context-compressor URL (OpenAI-compatible /v1/chat/completions), for example http://localhost:8081'
     required: false
-  compressor_model:
-    description: 'Local model used for context compression before Claude'
-    required: false
-    default: 'LFM2-350M'
   compressor_disable:
     description: 'Disable local context compression layer'
     required: false

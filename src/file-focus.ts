@@ -28,7 +28,7 @@ export async function selectRelevantFiles(
 ): Promise<string[]> {
   if (config.maxFiles == null) throw new Error("file-focus maxFiles is required");
   if (config.timeoutMs == null) throw new Error("file-focus timeoutMs is required");
-  if (!config.model) throw new Error("KAI_FILE_FOCUS_MODEL is required");
+  if (!config.model) throw new Error("local file-focus model is required");
   const maxFiles = config.maxFiles;
   const files = filesList.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
   if (files.length <= maxFiles) return files;

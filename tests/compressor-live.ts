@@ -7,8 +7,7 @@ applyTestEnv();
 
 const url = process.env.KAI_COMPRESSOR_URL;
 if (!url) { console.log("SKIP"); process.exit(0); }
-const model = process.env.KAI_COMPRESSOR_MODEL;
-if (!model) { console.error("set KAI_COMPRESSOR_MODEL"); process.exit(1); }
+const model = "LFM2-350M";
 
 const bigFilesBlock = Array.from({ length: 30 }, (_, i) => `service_${i}.py +${i + 1}/-0`).join("\n");
 const prompt = [

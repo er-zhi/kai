@@ -34,16 +34,19 @@ test("createDynamicContextPack writes manifest and context files", () => {
     prBody: "Body",
     filesList: "src/a.ts +1/-1",
     prCommentsContext: "u: msg",
+    prDiffDigest: "diff --git a/src/a.ts b/src/a.ts",
     repoFullName: "o/r",
     architectureContext: "arch data",
   });
 
   try {
     const manifestRaw = readFileSync(pack.manifestPath, "utf-8");
-    const manifest = JSON.parse(manifestRaw) as { files: { task: string; history: string; architecture: string | null } };
+    const manifest = JSON.parse(manifestRaw) as { files: { task: string; history: string; architecture: string | null; prDiff: string } };
     assert.ok(manifest.files.task.endsWith("task.txt"));
     assert.ok(manifest.files.history.endsWith("history.jsonl"));
+    assert.ok(manifest.files.prDiff.endsWith("pr-diff.diff"));
     assert.ok(manifest.files.architecture);
+    assert.match(readFileSync(manifest.files.prDiff, "utf-8"), /diff --git/);
   } finally {
     rmSync(pack.baseDir, { recursive: true, force: true });
   }
@@ -69,7 +72,10 @@ test("buildDynamicPromptFromManifest references manifest path and chain", () => 
     route,
     "/tmp/kai-context/manifest.json",
     false,
+    "diff --git a/auth.py b/auth.py",
   );
   assert.match(prompt, /Dynamic context manifest/);
+  assert.match(prompt, /Full PR diff/);
+  assert.match(prompt, /auth\.py/);
   assert.match(prompt, /RTK command rewrites \+ local context compression/);
 });

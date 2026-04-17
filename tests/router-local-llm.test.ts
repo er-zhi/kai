@@ -103,3 +103,19 @@ test("empty message is deterministic — no LLM call", async () => {
   assert.equal(route.intent, "needs-input");
   assert.equal(route.source, "rules");
 });
+
+liveTest("review-looking prompt cannot be downgraded to meta-template by local LLM", async () => {
+  const llm = await startFakeLLM(JSON.stringify({ intent: "meta-template" }));
+  try {
+    const route = await routeEventWithLocalLLM(
+      "do a comprehensive security review of this authentication service. analyze JWT token generation, OWASP compliance, and code locations.",
+      "haiku",
+      { url: llm.url, model: "LFM2-350M", timeoutMs: 1000 },
+    );
+    assert.equal(route.intent, "review");
+    assert.equal(route.decision, "call-model");
+    assert.equal(route.maxContextTokens, 10_000);
+  } finally {
+    await llm.close();
+  }
+});

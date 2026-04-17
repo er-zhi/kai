@@ -11,6 +11,10 @@ export function isMetaQuestion(msg: string): boolean {
   return /^(who are you|what are you|how to use|help|what can you do|кто ты|как пользоваться)/i.test(msg);
 }
 
+export function isReviewRequest(msg: string): boolean {
+  return /\b(review|security review|analy[sz]e|vulnerabilit|owasp|csrf|sql injection|jwt|auth|authentication|rate limiting|code locations|fixes required|token lifecycle|replay attacks?)\b/i.test(msg);
+}
+
 export function shouldVerifyCommit(message: string): boolean {
   if (/\b(commit|push)\b/i.test(message)) return true;
   const trimmed = message.trim();
@@ -92,6 +96,13 @@ function commitExpectedForIntent(intent: RouterIntent): boolean {
   return intent === "write-fix" || intent === "commit-write";
 }
 
+export function guardRouterIntent(intent: RouterIntent, message: string): RouterIntent {
+  if ((intent === "meta-template" || intent === "simple-answer") && isReviewRequest(message)) {
+    return "review";
+  }
+  return intent;
+}
+
 export class LocalRouterUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -125,7 +136,7 @@ export async function suggestTierWithLocalLLM(
   message: string,
   options: { url: string; model?: string; timeoutMs?: number },
 ): Promise<SuggestedTier | null> {
-  if (!options.model) throw new Error("KAI_ROUTER_MODEL is required");
+  if (!options.model) throw new Error("local router model is required");
   if (options.timeoutMs == null) throw new Error("KAI_ROUTER_TIMEOUT_MS is required");
   const signal = AbortSignal.timeout(options.timeoutMs);
   try {
@@ -228,7 +239,7 @@ export async function routeEventWithLocalLLM(
 
   if (!options) throw new LocalRouterUnavailableError("router options are required");
   const model = options.model;
-  if (!model) throw new LocalRouterUnavailableError("KAI_ROUTER_MODEL is required");
+  if (!model) throw new LocalRouterUnavailableError("local router model is required");
   if (options.timeoutMs == null) throw new Error("router timeout is required");
   const timeoutMs = options.timeoutMs;
   const messages = localRouterMessages(rules.normalizedMessage);
@@ -243,7 +254,7 @@ export async function routeEventWithLocalLLM(
   for (const delay of delaysMs) {
     if (delay) await new Promise(r => setTimeout(r, delay));
     try {
-      const intent = await callRouterOnce(url, model, messages, timeoutMs);
+      const intent = guardRouterIntent(await callRouterOnce(url, model, messages, timeoutMs), rules.normalizedMessage);
       const elapsedMs = Date.now() - started;
       const decision = decisionForIntent(intent);
       return {

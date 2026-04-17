@@ -16,6 +16,7 @@ import { loadConfig } from "./config";
 import { createLogger, errorMeta } from "./log";
 import { initAuditDb, latestAuditId, checkRateLimit, recordRateLimit, resolveAllowedModel, sessionStart, sessionUpdate, auditLog, logRouterDecision, logContextOptimization, detectAndRecordFollowupAudit as detectAndRecordFollowup, recordAuditQualitySignals as recordCommitVerification, recordAuditCacheHit as recordCacheHit } from "./audit";
 import { parseModelFromMessage, requireClaudeCLI, requireRTK, buildHeartbeatFrame, callClaudeCLIWithHeartbeat, safeUpdate, type HeartbeatContext } from "./runner";
+import { getPullRequestDiffDigest, truncateDiffDigest } from "./pr-diff";
 import {
   disallowedToolsFor as budgetDisallowedToolsFor,
   getMaxTurns as budgetGetMaxTurns,
@@ -67,6 +68,7 @@ const MODELS: Record<string, { id: string; label: string }> = {
   sonnet: { id: "claude-sonnet-4-20250514",    label: "Sonnet" },
   opus:   { id: "claude-opus-4-20250514",      label: "Opus" },
 };
+const LOCAL_LLM_MODEL = "LFM2-350M";
 const KODIF_ARCH_CONTEXT = `
 Kodif platform: 33+ microservices. Architecture repo: kodif-team/architect
 DBs: executor-db (kodif, PostgreSQL 13), chat-db (chat, PostgreSQL 15), ml-db (zendesk-json-db-pgadmin, PostgreSQL 13). All sync to BigQuery (kodif-51ce2, public dataset).
@@ -102,17 +104,14 @@ function gitOutput(command: string): string {
 // Pre-digests the PR diff so Claude has it in the prompt (cached, stable across
 // calls for the same PR state) instead of burning a bash tool-call + extra turn
 // to fetch it. Truncates past MAX_DIFF_CHARS to keep the stable prefix bounded.
-const MAX_DIFF_CHARS = Number(process.env.KAI_MAX_DIFF_CHARS || 12_000); // ~3K tokens
+const MAX_DIFF_CHARS = 12_000; // ~3K tokens
 function getPrDiffDigest(): string {
   try {
     const diff = execSync("git diff origin/main...HEAD --no-color --unified=3", {
       stdio: "pipe", timeout: 15_000, encoding: "utf-8", maxBuffer: 8 * 1024 * 1024,
     });
     if (!diff.trim()) return "";
-    if (diff.length <= MAX_DIFF_CHARS) return diff;
-    const head = diff.slice(0, Math.floor(MAX_DIFF_CHARS * 0.7));
-    const tail = diff.slice(-Math.floor(MAX_DIFF_CHARS * 0.2));
-    return `${head}\n... [truncated ${diff.length - MAX_DIFF_CHARS} chars] ...\n${tail}`;
+    return truncateDiffDigest(diff, MAX_DIFF_CHARS);
   } catch (e: unknown) {
     core.warning(`diff digest failed: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
     return "";
@@ -293,9 +292,9 @@ async function run() {
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");
     const routerUrl = core.getInput("router_url") || cfg.routerUrl;
-    const routerModel = core.getInput("router_model") || cfg.routerModel;
+    const routerModel = LOCAL_LLM_MODEL;
     const compressorUrl = core.getInput("compressor_url") || cfg.compressorUrl;
-    const compressorModel = core.getInput("compressor_model") || cfg.compressorModel;
+    const compressorModel = LOCAL_LLM_MODEL;
     const compressorDisabled = (core.getInput("compressor_disable") || process.env.KAI_COMPRESSOR_DISABLE || "false").toLowerCase() === "true";
     const compressorMinQueryTokens = Number(core.getInput("compressor_min_query_tokens") || cfg.compressorMinQueryTokens);
     const compressorMinPromptTokens = Number(core.getInput("compressor_min_prompt_tokens") || cfg.compressorMinPromptTokens);
@@ -470,7 +469,7 @@ async function run() {
     sessionUpdate(auditDb, runId, "analyzing", { replyCommentId });
 
     // Get PR context
-    let prTitle = "", prBody = "", filesList = "", prCommentsContext = "";
+    let prTitle = "", prBody = "", filesList = "", prCommentsContext = "", prDiffDigest = "";
     let prHeadRef = "", beforeHead = "";
     let contextManifestPath = "";
     let contextHistoryPath = "";
@@ -503,6 +502,8 @@ async function run() {
       // Compact: "file.py +67/-0" instead of "- file.py (+67/-0) [added]"
       filesList = files.map((f: { filename: string; additions: number; deletions: number }) =>
         `${f.filename} +${f.additions}/-${f.deletions}`).join("\n");
+      prDiffDigest = await getPullRequestDiffDigest(octokit, owner, repo, issueNumber, MAX_DIFF_CHARS);
+      if (prDiffDigest) core.info(`PR API diff digest attached: ${prDiffDigest.length} chars`);
 
       const commentWindow = route.intent === "simple-answer" ? 2 : route.commitExpected ? 3 : 5;
       const commentChars = route.intent === "simple-answer" ? 160 : 220;
@@ -525,6 +526,7 @@ async function run() {
         prBody,
         filesList,
         prCommentsContext,
+        prDiffDigest,
         repoFullName: `${owner}/${repo}`,
         architectureContext: isArchitectureQuestion(userMessage) ? KODIF_ARCH_CONTEXT : undefined,
       });
@@ -577,9 +579,12 @@ async function run() {
         } catch (e) { core.warning(`File focus failed: ${e}`); }
       }
 
-      // Pre-fetch the diff once — cached as part of the stable prefix.
-      const prDiffDigest = beforeHead ? getPrDiffDigest() : "";
-      if (prDiffDigest) core.info(`PR diff digest attached: ${prDiffDigest.length} chars`);
+      // API diff is authoritative for PR comments because issue_comment checks
+      // out the default branch. Local git diff is only a best-effort fallback.
+      if (!prDiffDigest && beforeHead) {
+        prDiffDigest = getPrDiffDigest();
+        if (prDiffDigest) core.info(`Local PR diff digest attached: ${prDiffDigest.length} chars`);
+      }
 
       const prompt = contextManifestPath
         ? buildDynamicPromptFromManifest(
@@ -588,6 +593,7 @@ async function run() {
           route,
           contextManifestPath,
           isArchitectureQuestion(userMessage),
+          prDiffDigest,
         )
         : buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route, focusedFiles, prDiffDigest);
 

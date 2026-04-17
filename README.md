@@ -58,7 +58,6 @@ jobs:
           github_token: ${{ steps.kai-token.outputs.token }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           router_url: http://localhost:21434
-          router_model: LFM2-350M
 ```
 
 ## Local Router LLM
@@ -103,5 +102,4 @@ Delete Kai's working comment to cancel a running job.
 | `anthropic_api_key` | No | — | Anthropic API key for Claude |
 | `trigger_phrase` | No | `@kai` | Trigger phrase |
 | `router_url` | No | — | Local LLM router URL (OpenAI-compatible); required before paid model calls |
-| `router_model` | No | `LFM2-350M` | Local router classifier model |
 ё
