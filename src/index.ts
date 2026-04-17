@@ -3,7 +3,7 @@ import * as github from "@actions/github";
 import { Octokit } from "@octokit/rest";
 import { execSync, spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, readFileSync, existsSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync } from "node:fs";
 import { compressPromptWithQwen, estimateTokens } from "./compressor";
 import { appendContextHistory, buildDynamicPromptFromManifest, createDynamicContextPack } from "./context-pack";
 import { buildFooter, buildRouterFooter } from "./footer";
@@ -17,6 +17,7 @@ import { createLogger, errorMeta } from "./log";
 import { initAuditDb, latestAuditId, checkRateLimit, recordRateLimit, resolveAllowedModel, sessionStart, sessionUpdate, auditLog, logRouterDecision, logContextOptimization, detectAndRecordFollowupAudit as detectAndRecordFollowup, recordAuditQualitySignals as recordCommitVerification, recordAuditCacheHit as recordCacheHit } from "./audit";
 import { parseModelFromMessage, requireClaudeCLI, requireRTK, buildHeartbeatFrame, callClaudeCLIWithHeartbeat, safeUpdate, type HeartbeatContext } from "./runner";
 import { getPullRequestDiffDigest, truncateDiffDigest } from "./pr-diff";
+import { buildRepoContextInstructions } from "./repo-context";
 import {
   disallowedToolsFor as budgetDisallowedToolsFor,
   getMaxTurns as budgetGetMaxTurns,
@@ -33,6 +34,32 @@ function errorStatus(error: unknown): number {
     if (typeof status === "number") return status;
   }
   return 0;
+}
+
+function requireReposPath(): string {
+  const value = core.getInput("repos_path") || process.env.KAI_REPOS_PATH;
+  if (!value || !value.trim()) {
+    throw new Error("Missing required repos path: set action input repos_path or env KAI_REPOS_PATH");
+  }
+  return value.trim();
+}
+
+function ensureLocalReposDirectory(reposPath: string): void {
+  const target = reposPath.trim();
+  if (!existsSync(target) || !statSync(target).isDirectory()) {
+    throw new Error(`KAI_REPOS_PATH must point to an existing repos directory: ${target}`);
+  }
+
+  const localPath = "repos";
+  const localStats = lstatSync(localPath, { throwIfNoEntry: false });
+  if (localStats) {
+    if (!statSync(localPath).isDirectory()) {
+      throw new Error("Local repos path exists but is not a directory");
+    }
+    return;
+  }
+
+  symlinkSync(target, localPath, "dir");
 }
 
 async function getPRCommentsContext(
@@ -224,19 +251,7 @@ function buildCLIPrompt(
   if (archTask) {
     stable.push(`Kodif architecture context:\n${KODIF_ARCH_CONTEXT}`);
   } else {
-    stable.push(
-      `PR repo checked out in current dir. The diff above is authoritative; only Read files if you need more than the diff shows.`,
-      // Cross-service context invite — skipped for short-answer tasks because
-      // it provoked Claude to wander /home/kai/architect/repos/ and balloon
-      // token usage on trivial questions.
-      shortAnswer
-        ? `STRICT BUDGET: this is a short-answer request. The diff above contains everything you need. Do NOT Read any file. Do NOT explore /home/kai/architect/repos/. Answer from the diff in at most 2 sentences.`
-        : `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context only when the diff alone is insufficient.`,
-      `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files — these are bot infrastructure, not project code.`,
-      `Rules: concise, markdown, repos/<service>/path/file.py:line refs, max 50 lines. Don't repeat prior analysis.`,
-      `For imperative write tasks (fix/add/update/create/patch/refactor/document), commit and push the change to the PR branch unless the user explicitly asks not to.`,
-      `Git commits: NEVER add Co-Authored-By headers or AI provider attribution. Author is already set to kodif-ai[bot].`,
-    );
+    stable.push(...buildRepoContextInstructions(shortAnswer));
   }
 
   // Dynamic tail — changes every call; cache miss happens only here.
@@ -288,6 +303,8 @@ async function run() {
 
   try {
     const cfg = loadConfig();
+    const reposPath = requireReposPath();
+    ensureLocalReposDirectory(reposPath);
     const trigger = core.getInput("trigger_phrase") || "@kai";
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");

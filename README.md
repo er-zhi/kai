@@ -100,6 +100,7 @@ Delete Kai's working comment to cancel a running job.
 |-------|----------|---------|-------------|
 | `github_token` | Yes | `github.token` | Token for GitHub API |
 | `anthropic_api_key` | No | — | Anthropic API key for Claude |
+| `repos_path` | Yes | — | Local source path to Kodif repositories; Kai exposes it to the model only as `repos/` |
 | `trigger_phrase` | No | `@kai` | Trigger phrase |
 | `router_url` | No | — | Local LLM router URL (OpenAI-compatible); required before paid model calls |
 ё

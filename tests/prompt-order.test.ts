@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCacheFriendlyPrompt, sharesStablePrefix } from "../dist/prompt-order.js";
+import { buildRepoContextInstructions } from "../dist/repo-context.js";
 
 test("stable context appears before the task block", () => {
   const out = buildCacheFriendlyPrompt({
@@ -42,4 +43,16 @@ test("empty sections are skipped cleanly", () => {
   const out = buildCacheFriendlyPrompt({ stable: [""], dynamic: ["only task"] });
   assert.ok(!out.includes("STABLE CONTEXT"));
   assert.ok(out.includes("only task"));
+});
+
+test("repo context instructions expose only repos directory to the model", () => {
+  const longTask = buildRepoContextInstructions(false).join("\n");
+  assert.match(longTask, /repos\//);
+  assert.doesNotMatch(longTask, /\/workspace\/repos/);
+  assert.doesNotMatch(longTask, /\/home\/kai\/architect\/repos/);
+
+  const shortTask = buildRepoContextInstructions(true).join("\n");
+  assert.match(shortTask, /Do NOT explore repos\//);
+  assert.doesNotMatch(shortTask, /\.\/repos/);
+  assert.doesNotMatch(shortTask, /\/home\/kai\/architect\/repos/);
 });

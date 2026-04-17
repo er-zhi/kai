@@ -14,6 +14,9 @@ inputs:
   anthropic_api_key:
     description: 'Anthropic API key for Claude-powered analysis'
     required: false
+  repos_path:
+    description: 'Required local source path to Kodif repositories; Kai exposes it to the model only as repos/'
+    required: false
   router_url:
     description: 'Required local LLM router URL (OpenAI-compatible /v1/chat/completions) before any paid model call, for example http://localhost:11434'
     required: false

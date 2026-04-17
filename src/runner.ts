@@ -9,6 +9,7 @@ import { parseRtkSavings } from "./rtk";
 import { sessionUpdate } from "./audit";
 import { calculateAnthropicUsageCostUsd } from "./budget";
 import { buildClaudeSpawnSpec } from "./runner-spawn";
+import { buildRepoContextInstructions } from "./repo-context";
 
 export type CLIResult = {
   text: string;
@@ -186,16 +187,7 @@ export function buildCLIPrompt(input: BuildPromptInput): string {
   if (archTask) {
     stable.push(`Kodif architecture context:\n${input.architectureContext ?? ""}`);
   } else {
-    stable.push(
-      `PR repo checked out in current dir. The diff above is authoritative; only Read files if you need more than the diff shows.`,
-      shortAnswer
-        ? `STRICT BUDGET: this is a short-answer request. The diff above contains everything you need. Do NOT Read any file. Do NOT explore /home/kai/architect/repos/. Answer from the diff in at most 2 sentences.`
-        : `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context only when the diff alone is insufficient.`,
-      `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files — these are bot infrastructure, not project code.`,
-      `Rules: concise, markdown, repos/<service>/path/file.py:line refs, max 50 lines. Don't repeat prior analysis.`,
-      `For imperative write tasks (fix/add/update/create/patch/refactor/document), commit and push the change to the PR branch unless the user explicitly asks not to.`,
-      `Git commits: NEVER add Co-Authored-By headers or AI provider attribution. Author is already set to kodif-ai[bot].`,
-    );
+    stable.push(...buildRepoContextInstructions(shortAnswer));
   }
   const dynamic: string[] = [
     `Router: intent=${input.route.intent}; confidence=${input.route.confidence}; contextBudget=${input.route.maxContextTokens}; commitExpected=${input.route.commitExpected}`,
