@@ -28027,7 +28027,6 @@ var ROUTER_INTENTS = [
   "review",
   "write-fix",
   "commit-write",
-  "job-candidate",
   "alert",
   "spam-abuse",
   "unsupported"
@@ -28112,7 +28111,7 @@ Return {"tier":"haiku"} or {"tier":"sonnet"} or {"tier":"opus"}.`
 function localRouterMessages(message) {
   return [{
     role: "user",
-    content: `Classify PR comment. Intents: simple-answer|review|write-fix|commit-write|job-candidate|meta-template|spam-abuse|needs-input|stop|alert|unsupported.
+    content: `Classify PR comment. Intents: simple-answer|review|write-fix|commit-write|meta-template|spam-abuse|needs-input|stop|alert|unsupported.
 Rules: "stop"\u2192stop; "who are you"/help\u2192meta-template; weather/music/jokes\u2192spam-abuse; empty/vague\u2192needs-input; "commit"/"push"\u2192commit-write; imperative add/fix/update\u2192write-fix; review/bug/risk\u2192review; question\u2192simple-answer.
 Return {"intent":"..."}.
 Comment: ${JSON.stringify(message)}`
@@ -28195,7 +28194,7 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
 }
 
 // src/templates.ts
-var META_TEMPLATE = `I'm Kai, the Kodif project assistant. My goal is to help with minimal token spend and provide a good experience for Kodif architecture questions. Response by local LLM (LFM2-350M). Usage: write a comment with a task for @kai; for deeper analysis add \`use sonnet\` or \`use opus\`; loop mode (under development) is a sandbox where the agent will work with full permissions, autonomously commit and open PRs.`;
+var META_TEMPLATE = `I'm Kai, the Kodif project assistant. My goal is to help with minimal token spend and provide a good experience for Kodif architecture questions. Response by local LLM (LFM2-350M). Usage: write a comment with a task for @kai; for deeper analysis add \`use sonnet\` or \`use opus\`.`;
 var OFFTOPIC_TEMPLATE = `Kai only handles development work related to our platform: code review, bug fixes, tests, PRs, architecture, deployments, logs, metrics, and engineering tasks. Please ask a work-related development question or provide a specific repo/PR/task.`;
 function templateForRoute(route) {
   return route.intent === "spam-abuse" ? OFFTOPIC_TEMPLATE : META_TEMPLATE;
