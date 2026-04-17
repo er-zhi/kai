@@ -11,10 +11,6 @@ export function isMetaQuestion(msg: string): boolean {
   return /^(who are you|what are you|how to use|help|what can you do|кто ты|как пользоваться)/i.test(msg);
 }
 
-export function isReviewRequest(msg: string): boolean {
-  return /\b(review|security review|analy[sz]e|vulnerabilit|owasp|csrf|sql injection|jwt|auth|authentication|rate limiting|code locations|fixes required|token lifecycle|replay attacks?)\b/i.test(msg);
-}
-
 export function shouldVerifyCommit(message: string): boolean {
   if (/\b(commit|push)\b/i.test(message)) return true;
   const trimmed = message.trim();
@@ -96,13 +92,6 @@ function commitExpectedForIntent(intent: RouterIntent): boolean {
   return intent === "write-fix" || intent === "commit-write";
 }
 
-export function guardRouterIntent(intent: RouterIntent, message: string): RouterIntent {
-  if ((intent === "meta-template" || intent === "simple-answer") && isReviewRequest(message)) {
-    return "review";
-  }
-  return intent;
-}
-
 export class LocalRouterUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -177,9 +166,9 @@ type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 function localRouterMessages(message: string): ChatMessage[] {
   return [{
     role: "user",
-    content: `Classify PR comment. Intents: simple-answer|review|write-fix|commit-write|meta-template|spam-abuse|needs-input|stop|alert|unsupported.
-Rules: "stop"→stop; "who are you"/help→meta-template; weather/music/jokes→spam-abuse; empty/vague→needs-input; "commit"/"push"→commit-write; imperative add/fix/update→write-fix; review/bug/risk→review; question→simple-answer.
-Return {"intent":"..."}.
+    content: `You are a router for GitHub PR comments. Return one JSON object: {"intent":"..."}.
+Allowed intents: simple-answer, review, write-fix, commit-write, meta-template, spam-abuse, needs-input, stop, alert, unsupported.
+meta-template is ONLY for questions about Kai/help/usage. Questions about PR code, bugs, security, or risks are review.
 Comment: ${JSON.stringify(message)}`,
   }];
 }
@@ -254,7 +243,7 @@ export async function routeEventWithLocalLLM(
   for (const delay of delaysMs) {
     if (delay) await new Promise(r => setTimeout(r, delay));
     try {
-      const intent = guardRouterIntent(await callRouterOnce(url, model, messages, timeoutMs), rules.normalizedMessage);
+      const intent = await callRouterOnce(url, model, messages, timeoutMs);
       const elapsedMs = Date.now() - started;
       const decision = decisionForIntent(intent);
       return {

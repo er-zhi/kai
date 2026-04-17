@@ -20,3 +20,16 @@ test("classifies through a live local LLM router", { skip: !routerUrl }, async (
   assert.equal(route.decision, "call-model");
   assert.equal(route.commitExpected, true);
 });
+
+test("routes short PR security risk question to model path", { skip: !routerUrl }, async () => {
+  assert(routerUrl);
+  const route = await routeEventWithLocalLLM("one sentence: what is the biggest security risk in this PR?", "haiku", {
+    url: routerUrl,
+    model: routerModel,
+    timeoutMs: 30000,
+  });
+
+  assert.equal(route.source, "local-llm");
+  assert.equal(route.intent, "review");
+  assert.equal(route.decision, "call-model");
+});
