@@ -453,6 +453,26 @@ function gitOutput(command: string): string {
   return execSync(command, { stdio: "pipe", timeout: 30_000, encoding: "utf-8" }).trim();
 }
 
+// Pre-digests the PR diff so Claude has it in the prompt (cached, stable across
+// calls for the same PR state) instead of burning a bash tool-call + extra turn
+// to fetch it. Truncates past MAX_DIFF_CHARS to keep the stable prefix bounded.
+const MAX_DIFF_CHARS = Number(process.env.KAI_MAX_DIFF_CHARS || 12_000); // ~3K tokens
+function getPrDiffDigest(): string {
+  try {
+    const diff = execSync("git diff origin/main...HEAD --no-color --unified=3", {
+      stdio: "pipe", timeout: 15_000, encoding: "utf-8", maxBuffer: 8 * 1024 * 1024,
+    });
+    if (!diff.trim()) return "";
+    if (diff.length <= MAX_DIFF_CHARS) return diff;
+    const head = diff.slice(0, Math.floor(MAX_DIFF_CHARS * 0.7));
+    const tail = diff.slice(-Math.floor(MAX_DIFF_CHARS * 0.2));
+    return `${head}\n... [truncated ${diff.length - MAX_DIFF_CHARS} chars] ...\n${tail}`;
+  } catch (e: unknown) {
+    core.warning(`diff digest failed: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
+    return "";
+  }
+}
+
 function stripProviderCoAuthorFromHead(): void {
   const message = gitOutput("git log -1 --pretty=%B");
   const cleaned = message
@@ -528,6 +548,7 @@ function buildCLIPrompt(
   userMessage: string, prTitle: string, prBody: string,
   filesList: string, prCommentsContext: string, repoFullName: string,
   route: RouterDecision, focusedFiles: string[] = [],
+  prDiffDigest = "",
 ): string {
   if (isMetaQuestion(userMessage)) return META_TEMPLATE;
 
@@ -541,17 +562,23 @@ function buildCLIPrompt(
   ];
   if (prBody) stable.push(`Desc: ${prBody.slice(0, 300)}`);
   stable.push(`Files:\n${filesList}`);
+  // Pre-attached diff — Claude should NOT re-fetch via bash. This is the single
+  // largest cost win on short-answer tasks: 1 cached prefix read vs. multiple
+  // turns of `git diff` + Read calls.
+  if (prDiffDigest) {
+    stable.push(`Full PR diff (pre-fetched — do NOT re-run \`git diff\`):\n\`\`\`diff\n${prDiffDigest}\n\`\`\``);
+  }
   if (archTask) {
     stable.push(`Kodif architecture context:\n${KODIF_ARCH_CONTEXT}`);
   } else {
     stable.push(
-      `PR repo checked out in current dir. Use git diff origin/main...HEAD and Read to inspect PROJECT code only.`,
+      `PR repo checked out in current dir. The diff above is authoritative; only Read files if you need more than the diff shows.`,
       // Cross-service context invite — skipped for short-answer tasks because
       // it provoked Claude to wander /home/kai/architect/repos/ and balloon
       // token usage on trivial questions.
       shortAnswer
-        ? `STRICT BUDGET: this is a short-answer request. Read ONLY the diff (git diff origin/main...HEAD). Do NOT Read full files. Do NOT explore /home/kai/architect/repos/. Max 3 tool calls total. Return at most 2 sentences.`
-        : `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context.`,
+        ? `STRICT BUDGET: this is a short-answer request. The diff above contains everything you need. Do NOT Read any file. Do NOT explore /home/kai/architect/repos/. Answer from the diff in at most 2 sentences.`
+        : `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context only when the diff alone is insufficient.`,
       `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files — these are bot infrastructure, not project code.`,
       `Rules: concise, markdown, repos/<service>/path/file.py:line refs, max 50 lines. Don't repeat prior analysis.`,
       `For imperative write tasks (fix/add/update/create/patch/refactor/document), commit and push the change to the PR branch unless the user explicitly asks not to.`,
@@ -643,6 +670,7 @@ async function callClaudeCLIWithHeartbeat(
   apiKey: string, modelId: string, prompt: string, maxTurns: number,
   heartbeat: HeartbeatContext,
   db: DatabaseSync, runId: string, modelTier: string,
+  disallowedTools: string[] = [],
 ): Promise<CLIResult> {
   const isRoot = process.getuid?.() === 0;
   const maxRetries = maxRetriesFor(modelTier);
@@ -659,7 +687,7 @@ async function callClaudeCLIWithHeartbeat(
     }
 
     try {
-      const result = await runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, heartbeat, db, runId);
+      const result = await runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, heartbeat, db, runId, disallowedTools);
       sessionUpdate(db, runId, "completed", { status: "completed" });
       return result;
     } catch (e: unknown) {
@@ -676,12 +704,22 @@ async function callClaudeCLIWithHeartbeat(
   throw new Error("All CLI retries exhausted");
 }
 
+// Tools Claude cannot call on short-answer requests. Read stays allowed in case
+// the diff digest was truncated; Glob/Grep/find are the expensive explorers.
+function disallowedToolsFor(userMessage: string): string[] {
+  if (!isShortAnswerRequest(userMessage)) return [];
+  return ["Glob", "WebFetch", "WebSearch", "Bash(find:*)", "Bash(cd:*)", "Bash(ls:*)"];
+}
+
 function runCLIWithHeartbeat(
   apiKey: string, modelId: string, prompt: string, maxTurns: number, isRoot: boolean,
-  hb: HeartbeatContext, db: DatabaseSync, runId: string,
+  hb: HeartbeatContext, db: DatabaseSync, runId: string, disallowedTools: string[] = [],
 ): Promise<CLIResult> {
   return new Promise((resolve, reject) => {
     const claudeArgs = ["-p", "--dangerously-skip-permissions", "--output-format", "json", "--max-turns", String(maxTurns), "--model", modelId];
+    if (disallowedTools.length) {
+      claudeArgs.push("--disallowed-tools", disallowedTools.join(","));
+    }
     const startTime = Date.now();
     let output = "";
     let settled = false; // guard against double resolve/reject
@@ -1084,6 +1122,10 @@ async function run() {
         } catch (e) { core.warning(`File focus failed: ${e}`); }
       }
 
+      // Pre-fetch the diff once — cached as part of the stable prefix.
+      const prDiffDigest = beforeHead ? getPrDiffDigest() : "";
+      if (prDiffDigest) core.info(`PR diff digest attached: ${prDiffDigest.length} chars`);
+
       const prompt = contextManifestPath
         ? buildDynamicPromptFromManifest(
           userMessage,
@@ -1092,7 +1134,7 @@ async function run() {
           contextManifestPath,
           isArchitectureQuestion(userMessage),
         )
-        : buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route, focusedFiles);
+        : buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route, focusedFiles, prDiffDigest);
 
       // Dedup: if the identical finalPrompt was answered for this PR in the last
       // 24h, return the cached reply without touching Claude (0 tokens). Hash
@@ -1190,8 +1232,10 @@ async function run() {
         octokit, owner, repo, replyCommentId, sender, modelLabel: selectedModel.label,
       };
 
+      const disallowed = disallowedToolsFor(userMessage);
+      if (disallowed.length) core.info(`Gated tools: ${disallowed.join(",")}`);
       const r = await callClaudeCLIWithHeartbeat(
-        anthropicApiKey, selectedModel.id, finalPrompt, maxTurns, heartbeatCtx, auditDb, runId, modelTier);
+        anthropicApiKey, selectedModel.id, finalPrompt, maxTurns, heartbeatCtx, auditDb, runId, modelTier, disallowed);
       result = r.text;
       let commitVerifiedOutcome: boolean | null = null;
       try {

@@ -28776,6 +28776,27 @@ function logErrorToSentry(error2, extra) {
 function gitOutput(command) {
   return (0, import_node_child_process.execSync)(command, { stdio: "pipe", timeout: 3e4, encoding: "utf-8" }).trim();
 }
+var MAX_DIFF_CHARS = Number(process.env.KAI_MAX_DIFF_CHARS || 12e3);
+function getPrDiffDigest() {
+  try {
+    const diff = (0, import_node_child_process.execSync)("git diff origin/main...HEAD --no-color --unified=3", {
+      stdio: "pipe",
+      timeout: 15e3,
+      encoding: "utf-8",
+      maxBuffer: 8 * 1024 * 1024
+    });
+    if (!diff.trim()) return "";
+    if (diff.length <= MAX_DIFF_CHARS) return diff;
+    const head = diff.slice(0, Math.floor(MAX_DIFF_CHARS * 0.7));
+    const tail = diff.slice(-Math.floor(MAX_DIFF_CHARS * 0.2));
+    return `${head}
+... [truncated ${diff.length - MAX_DIFF_CHARS} chars] ...
+${tail}`;
+  } catch (e) {
+    core.warning(`diff digest failed: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
+    return "";
+  }
+}
 function stripProviderCoAuthorFromHead() {
   const message = gitOutput("git log -1 --pretty=%B");
   const cleaned = message.split("\n").filter((line) => !/^Co-Authored-By:\s*(Claude|Anthropic|OpenAI|ChatGPT|Codex|AI)/i.test(line.trim())).join("\n").trim();
@@ -28833,7 +28854,7 @@ function commitVerificationNote(userMessage, beforeHead, branch, githubToken) {
 function isShortAnswerRequest(message) {
   return /\b(one\s+(?:sentence|line|word|paragraph)|1\s+sentence|single\s+sentence|briefly|tl;?\s*dr|in\s+(?:a\s+)?(?:word|sentence|line)|short\s+answer|yes\/no|quick(?:ly)?)\b/i.test(message);
 }
-function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, repoFullName, route, focusedFiles = []) {
+function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, repoFullName, route, focusedFiles = [], prDiffDigest = "") {
   if (isMetaQuestion(userMessage)) return META_TEMPLATE;
   const archTask = isArchitectureQuestion(userMessage);
   const shortAnswer = isShortAnswerRequest(userMessage);
@@ -28843,16 +28864,22 @@ function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsConte
   if (prBody) stable.push(`Desc: ${prBody.slice(0, 300)}`);
   stable.push(`Files:
 ${filesList}`);
+  if (prDiffDigest) {
+    stable.push(`Full PR diff (pre-fetched \u2014 do NOT re-run \`git diff\`):
+\`\`\`diff
+${prDiffDigest}
+\`\`\``);
+  }
   if (archTask) {
     stable.push(`Kodif architecture context:
 ${KODIF_ARCH_CONTEXT}`);
   } else {
     stable.push(
-      `PR repo checked out in current dir. Use git diff origin/main...HEAD and Read to inspect PROJECT code only.`,
+      `PR repo checked out in current dir. The diff above is authoritative; only Read files if you need more than the diff shows.`,
       // Cross-service context invite — skipped for short-answer tasks because
       // it provoked Claude to wander /home/kai/architect/repos/ and balloon
       // token usage on trivial questions.
-      shortAnswer ? `STRICT BUDGET: this is a short-answer request. Read ONLY the diff (git diff origin/main...HEAD). Do NOT Read full files. Do NOT explore /home/kai/architect/repos/. Max 3 tool calls total. Return at most 2 sentences.` : `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context.`,
+      shortAnswer ? `STRICT BUDGET: this is a short-answer request. The diff above contains everything you need. Do NOT Read any file. Do NOT explore /home/kai/architect/repos/. Answer from the diff in at most 2 sentences.` : `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context only when the diff alone is insufficient.`,
       `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files \u2014 these are bot infrastructure, not project code.`,
       `Rules: concise, markdown, repos/<service>/path/file.py:line refs, max 50 lines. Don't repeat prior analysis.`,
       `For imperative write tasks (fix/add/update/create/patch/refactor/document), commit and push the change to the PR branch unless the user explicitly asks not to.`,
@@ -28911,7 +28938,7 @@ function spinnerFrame(_tick, elapsed, _modelLabel) {
 
 _Delete this comment to cancel._`;
 }
-async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, heartbeat, db, runId, modelTier) {
+async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, heartbeat, db, runId, modelTier, disallowedTools = []) {
   const isRoot = process.getuid?.() === 0;
   const maxRetries = maxRetriesFor(modelTier);
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -28934,7 +28961,7 @@ _Delete this comment to cancel._`
       await new Promise((r) => setTimeout(r, delay));
     }
     try {
-      const result = await runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, heartbeat, db, runId);
+      const result = await runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, heartbeat, db, runId, disallowedTools);
       sessionUpdate(db, runId, "completed", { status: "completed" });
       return result;
     } catch (e) {
@@ -28949,9 +28976,16 @@ _Delete this comment to cancel._`
   }
   throw new Error("All CLI retries exhausted");
 }
-function runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, hb, db, runId) {
+function disallowedToolsFor(userMessage) {
+  if (!isShortAnswerRequest(userMessage)) return [];
+  return ["Glob", "WebFetch", "WebSearch", "Bash(find:*)", "Bash(cd:*)", "Bash(ls:*)"];
+}
+function runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, hb, db, runId, disallowedTools = []) {
   return new Promise((resolve, reject) => {
     const claudeArgs = ["-p", "--dangerously-skip-permissions", "--output-format", "json", "--max-turns", String(maxTurns), "--model", modelId];
+    if (disallowedTools.length) {
+      claudeArgs.push("--disallowed-tools", disallowedTools.join(","));
+    }
     const startTime = Date.now();
     let output = "";
     let settled = false;
@@ -29368,13 +29402,15 @@ CLAUDE.md
           core.warning(`File focus failed: ${e}`);
         }
       }
+      const prDiffDigest = beforeHead ? getPrDiffDigest() : "";
+      if (prDiffDigest) core.info(`PR diff digest attached: ${prDiffDigest.length} chars`);
       const prompt = contextManifestPath ? buildDynamicPromptFromManifest(
         userMessage,
         `${owner}/${repo}`,
         route,
         contextManifestPath,
         isArchitectureQuestion(userMessage)
-      ) : buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route, focusedFiles);
+      ) : buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route, focusedFiles, prDiffDigest);
       const cached = lookupCachedReply(auditDb, prompt, `${owner}/${repo}`, issueNumber);
       if (cached) {
         const aid = latestAuditId(auditDb, sender, `${owner}/${repo}`, issueNumber);
@@ -29488,6 +29524,8 @@ ${cached.reply}
         sender,
         modelLabel: selectedModel.label
       };
+      const disallowed = disallowedToolsFor(userMessage);
+      if (disallowed.length) core.info(`Gated tools: ${disallowed.join(",")}`);
       const r = await callClaudeCLIWithHeartbeat(
         anthropicApiKey,
         selectedModel.id,
@@ -29496,7 +29534,8 @@ ${cached.reply}
         heartbeatCtx,
         auditDb,
         runId,
-        modelTier
+        modelTier,
+        disallowed
       );
       result = r.text;
       let commitVerifiedOutcome = null;
