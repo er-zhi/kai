@@ -89,20 +89,23 @@ export function disallowedToolsFor(userMessage: string): string[] {
 export const MAX_PROMPT_TOKENS = 50_000;
 export const SHORT_ANSWER_MAX_INPUT_TOKENS = 6_000;
 
+export type PreflightRefusalKind = "cost-over-cap" | "short-answer-too-large" | "hard-ceiling";
+
 export type PreflightDecision =
   | { allowed: true }
-  | { allowed: false; reason: string };
+  | { allowed: false; reason: string; kind: PreflightRefusalKind };
 
 export function preflightBudget(
   userMessage: string, promptTokens: number, tier: string,
 ): PreflightDecision {
   if (promptTokens > MAX_PROMPT_TOKENS) {
-    return { allowed: false, reason: `prompt ${promptTokens} tokens > hard ceiling ${MAX_PROMPT_TOKENS}` };
+    return { allowed: false, reason: `prompt ${promptTokens} tokens > hard ceiling ${MAX_PROMPT_TOKENS}`, kind: "hard-ceiling" };
   }
   if (isShortAnswerRequest(userMessage) && promptTokens > SHORT_ANSWER_MAX_INPUT_TOKENS) {
     return {
       allowed: false,
       reason: `short-answer prompt ${promptTokens} tokens > cap ${SHORT_ANSWER_MAX_INPUT_TOKENS}`,
+      kind: "short-answer-too-large",
     };
   }
   // Projected worst-case: max_turns × prompt × fresh-input rate, plus a 1K
@@ -117,6 +120,7 @@ export function preflightBudget(
     return {
       allowed: false,
       reason: `worst-case projection $${worstTotal.toFixed(4)} > tier cap $${cap} (${maxTurns}t × ${promptTokens}tok)`,
+      kind: "cost-over-cap",
     };
   }
   return { allowed: true };

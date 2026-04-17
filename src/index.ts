@@ -269,6 +269,16 @@ const MAX_PROMPT_TOKENS = BUDGET_MAX_PROMPT_TOKENS;
 
 const disallowedToolsFor = budgetDisallowedToolsFor;
 
+const TIER_ESCALATION_ORDER = ["haiku", "sonnet", "opus"] as const;
+const TIER_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
+
+function escalationTierSequence(startTier: string, senderMaxTier: string): string[] {
+  const maxRank = TIER_RANK[senderMaxTier] ?? 1;
+  return TIER_ESCALATION_ORDER.filter(
+    (t) => TIER_RANK[t] > TIER_RANK[startTier] && TIER_RANK[t] <= maxRank,
+  );
+}
+
 // --- Main with global error handler ---
 
 async function run() {
@@ -538,6 +548,7 @@ async function run() {
     // Call Claude CLI with heartbeat + retry
     let result = "";
     let footer = "";
+    let escalationNotice = "";
 
     if (!anthropicApiKey) {
       result = `📋 **PR: ${prTitle}**\n\nFiles:\n${filesList}`;
@@ -663,10 +674,43 @@ async function run() {
       // FIRST LAW: single place that enforces budget before any external API
       // call. Runs all per-tier, prompt-size, and worst-case cost checks.
       const finalPromptTokens = estimateTokens(finalPrompt);
-      const preflight = preflightBudget(userMessage, finalPromptTokens, modelTier);
+      let activeTier = modelTier;
+      let activeModel = selectedModel;
+      let preflight = preflightBudget(userMessage, finalPromptTokens, activeTier);
+
+      // Auto-escalation: if haiku budget is exceeded, try sonnet, then opus.
+      if (!preflight.allowed && preflight.kind === "cost-over-cap") {
+        for (const candidateTier of escalationTierSequence(activeTier, senderMaxTier)) {
+          const candidate = preflightBudget(userMessage, finalPromptTokens, candidateTier);
+          if (candidate.allowed) {
+            escalationNotice = `\n\n> _Budget for **${activeTier}** exceeded (${finalPromptTokens} tokens). Auto-escalated to **${candidateTier}**._`;
+            core.warning(`Auto-escalated ${activeTier}→${candidateTier}: ${preflight.reason}`);
+            auditLog(auditDb, {
+              sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
+              model: `escalated-${activeTier}-to-${candidateTier}`, message: rawMessage,
+              durationMs: Date.now() - startTime,
+              costUsd: 0, tokensIn: finalPromptTokens, tokensOut: 0,
+              status: "escalated", error: preflight.reason,
+            });
+            await safeUpdate(octokit, owner, repo, replyCommentId,
+              buildHeartbeatFrame(2, Math.round((Date.now() - startTime) / 1000), MODELS[candidateTier].label));
+            activeTier = candidateTier;
+            activeModel = MODELS[candidateTier];
+            preflight = candidate;
+            break;
+          }
+        }
+      }
+
       if (!preflight.allowed) {
-        result = `⛔ Pre-flight refused paid model call: ${preflight.reason}.\n\nIf you asked for a terse answer, drop the \`one sentence\` / \`briefly\` / \`tl;dr\` qualifier to get a full review — or add \`use sonnet\` / \`use opus\` to opt into a bigger budget tier.`;
-        footer = `Kai · preflight-refused · 0K in / 0K out · $0.0000 · 0t · ${Math.round((Date.now() - startTime) / 1000)}s`;
+        const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+        const hint = preflight.kind === "hard-ceiling"
+          ? `Prompt (${finalPromptTokens} tokens) exceeds the ${MAX_PROMPT_TOKENS}-token hard ceiling. Split the request into smaller tasks.`
+          : escalationTierSequence(modelTier, senderMaxTier).length === 0
+            ? `@${sender} is capped at **${senderMaxTier}**. Ask an admin to raise the allowlist.`
+            : `Even the highest permitted tier cannot handle this prompt size. Reduce context.`;
+        result = `⛔ Pre-flight refused: ${preflight.reason}.\n\n${hint}`;
+        footer = `Kai · preflight-refused · 0K in / 0K out · $0.0000 · 0t · ${elapsedSec}s`;
         auditLog(auditDb, {
           sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
           model: "preflight-refused", message: rawMessage,
@@ -680,22 +724,22 @@ async function run() {
           return;
         }
         await safeUpdate(octokit, owner, repo, replyCommentId,
-          `> @${sender}: ${rawMessage}${tierNotice}\n\n${result}\n\n---\n<sub>${footer}</sub>`);
+          `> @${sender}: ${rawMessage}${tierNotice}${escalationNotice}\n\n${result}\n\n---\n<sub>${footer}</sub>`);
         sessionUpdate(auditDb, runId, "completed", { status: "refused-pre-flight" });
         core.warning(`Pre-flight refused paid call: ${preflight.reason}`);
         return;
       }
 
-      const maxTurns = getMaxTurns(userMessage, modelTier);
+      const maxTurns = getMaxTurns(userMessage, activeTier);
       core.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);
       const heartbeatCtx: HeartbeatContext = {
-        octokit, owner, repo, replyCommentId, sender, modelLabel: selectedModel.label,
+        octokit, owner, repo, replyCommentId, sender, modelLabel: activeModel.label,
       };
 
       const disallowed = disallowedToolsFor(userMessage);
       if (disallowed.length) core.info(`Gated tools: ${disallowed.join(",")}`);
       const r = await callClaudeCLIWithHeartbeat(
-        anthropicApiKey, selectedModel.id, finalPrompt, maxTurns, heartbeatCtx, auditDb, runId, modelTier, disallowed);
+        anthropicApiKey, activeModel.id, finalPrompt, maxTurns, heartbeatCtx, auditDb, runId, activeTier, disallowed);
       result = r.text;
       let commitVerifiedOutcome: boolean | null = null;
       try {
@@ -728,7 +772,7 @@ async function run() {
       }
       const durationSec = Math.round(durationMs / 1000);
       footer = buildFooter(
-        selectedModel.label, rtkPct, cmpSavings, r.inputTokens, r.outputTokens,
+        activeModel.label, rtkPct, cmpSavings, r.inputTokens, r.outputTokens,
         r.costUsd, r.numTurns, durationSec, r.cacheReadTokens);
 
       const finalStatus = costOverCap
@@ -736,11 +780,11 @@ async function run() {
         : r.rtkSavings === "0.0%" ? "completed-rtk-bypass" : "completed";
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
-        model: selectedModel.label, message: rawMessage, durationMs,
+        model: activeModel.label, message: rawMessage, durationMs,
         costUsd: r.costUsd, tokensIn: r.inputTokens, tokensOut: r.outputTokens,
         rtkSavings: rtkPct, status: finalStatus,
       });
-      recordRateLimit(auditDb, sender, `${owner}/${repo}`, modelTier, r.costUsd);
+      recordRateLimit(auditDb, sender, `${owner}/${repo}`, activeTier, r.costUsd);
 
       // Link quality signals to the just-inserted audit row, and remember the
       // reply for 24h so an identical follow-up hits dedup cache.
@@ -764,7 +808,7 @@ async function run() {
 
     sessionUpdate(auditDb, runId, "responding");
     await safeUpdate(octokit, owner, repo, replyCommentId,
-      `> @${sender}: ${rawMessage}${tierNotice}\n\n${result}\n\n---\n<sub>${footer}</sub>`);
+      `> @${sender}: ${rawMessage}${tierNotice}${escalationNotice}\n\n${result}\n\n---\n<sub>${footer}</sub>`);
     sessionUpdate(auditDb, runId, "completed", { status: "completed" });
 
     core.info("Done");

@@ -28855,7 +28855,7 @@ function getMaxTurns(message, modelTier) {
   if (modelTier === "sonnet") return 20;
   if (isImperativeWriteRequest(message)) return 20;
   if (isShortAnswerRequest(message)) return 1;
-  if (modelTier === "haiku" && /\b(review|refactor)\b/i.test(message)) return 1;
+  if (modelTier === "haiku" && /\b(review|refactor)\b/i.test(message)) return 2;
   const isTrulySimple = message.length < 50 && /^(top|list|one-liner|quick|summarize|how many|which file)/i.test(message);
   return isTrulySimple ? 8 : 12;
 }
@@ -28885,12 +28885,13 @@ var MAX_PROMPT_TOKENS = 5e4;
 var SHORT_ANSWER_MAX_INPUT_TOKENS = 6e3;
 function preflightBudget(userMessage, promptTokens, tier) {
   if (promptTokens > MAX_PROMPT_TOKENS) {
-    return { allowed: false, reason: `prompt ${promptTokens} tokens > hard ceiling ${MAX_PROMPT_TOKENS}` };
+    return { allowed: false, reason: `prompt ${promptTokens} tokens > hard ceiling ${MAX_PROMPT_TOKENS}`, kind: "hard-ceiling" };
   }
   if (isShortAnswerRequest(userMessage) && promptTokens > SHORT_ANSWER_MAX_INPUT_TOKENS) {
     return {
       allowed: false,
-      reason: `short-answer prompt ${promptTokens} tokens > cap ${SHORT_ANSWER_MAX_INPUT_TOKENS}`
+      reason: `short-answer prompt ${promptTokens} tokens > cap ${SHORT_ANSWER_MAX_INPUT_TOKENS}`,
+      kind: "short-answer-too-large"
     };
   }
   const maxTurns = getMaxTurns(userMessage, tier);
@@ -28902,7 +28903,8 @@ function preflightBudget(userMessage, promptTokens, tier) {
   if (worstTotal > cap) {
     return {
       allowed: false,
-      reason: `worst-case projection $${worstTotal.toFixed(4)} > tier cap $${cap} (${maxTurns}t \xD7 ${promptTokens}tok)`
+      reason: `worst-case projection $${worstTotal.toFixed(4)} > tier cap $${cap} (${maxTurns}t \xD7 ${promptTokens}tok)`,
+      kind: "cost-over-cap"
     };
   }
   return { allowed: true };
@@ -29334,7 +29336,16 @@ ${prCommentsContext}`);
 }
 var getMaxTurns2 = getMaxTurns;
 var MAX_COST_USD_BY_TIER2 = MAX_COST_USD_BY_TIER;
+var MAX_PROMPT_TOKENS2 = MAX_PROMPT_TOKENS;
 var disallowedToolsFor2 = disallowedToolsFor;
+var TIER_ESCALATION_ORDER = ["haiku", "sonnet", "opus"];
+var TIER_RANK2 = { haiku: 1, sonnet: 2, opus: 3 };
+function escalationTierSequence(startTier, senderMaxTier) {
+  const maxRank = TIER_RANK2[senderMaxTier] ?? 1;
+  return TIER_ESCALATION_ORDER.filter(
+    (t) => TIER_RANK2[t] > TIER_RANK2[startTier] && TIER_RANK2[t] <= maxRank
+  );
+}
 async function run() {
   let octokit = null;
   let owner = "", repo = "", replyCommentId = 0;
@@ -29617,6 +29628,7 @@ ${template}
     }
     let result = "";
     let footer = "";
+    let escalationNotice = "";
     if (!anthropicApiKey) {
       result = `\u{1F4CB} **PR: ${prTitle}**
 
@@ -29755,12 +29767,51 @@ ${cached.reply}
         throw new Error(`context compression is required but failed: ${compressionErrorMessage}`);
       }
       const finalPromptTokens = estimateTokens(finalPrompt);
-      const preflight = preflightBudget(userMessage, finalPromptTokens, modelTier);
-      if (!preflight.allowed) {
-        result = `\u26D4 Pre-flight refused paid model call: ${preflight.reason}.
+      let activeTier = modelTier;
+      let activeModel = selectedModel;
+      let preflight = preflightBudget(userMessage, finalPromptTokens, activeTier);
+      if (!preflight.allowed && preflight.kind === "cost-over-cap") {
+        for (const candidateTier of escalationTierSequence(activeTier, senderMaxTier)) {
+          const candidate = preflightBudget(userMessage, finalPromptTokens, candidateTier);
+          if (candidate.allowed) {
+            escalationNotice = `
 
-If you asked for a terse answer, drop the \`one sentence\` / \`briefly\` / \`tl;dr\` qualifier to get a full review \u2014 or add \`use sonnet\` / \`use opus\` to opt into a bigger budget tier.`;
-        footer = `Kai \xB7 preflight-refused \xB7 0K in / 0K out \xB7 $0.0000 \xB7 0t \xB7 ${Math.round((Date.now() - startTime) / 1e3)}s`;
+> _Budget for **${activeTier}** exceeded (${finalPromptTokens} tokens). Auto-escalated to **${candidateTier}**._`;
+            core3.warning(`Auto-escalated ${activeTier}\u2192${candidateTier}: ${preflight.reason}`);
+            auditLog(auditDb, {
+              sender,
+              repo: `${owner}/${repo}`,
+              prNumber: issueNumber,
+              model: `escalated-${activeTier}-to-${candidateTier}`,
+              message: rawMessage,
+              durationMs: Date.now() - startTime,
+              costUsd: 0,
+              tokensIn: finalPromptTokens,
+              tokensOut: 0,
+              status: "escalated",
+              error: preflight.reason
+            });
+            await safeUpdate(
+              octokit,
+              owner,
+              repo,
+              replyCommentId,
+              buildHeartbeatFrame(2, Math.round((Date.now() - startTime) / 1e3), MODELS[candidateTier].label)
+            );
+            activeTier = candidateTier;
+            activeModel = MODELS[candidateTier];
+            preflight = candidate;
+            break;
+          }
+        }
+      }
+      if (!preflight.allowed) {
+        const elapsedSec = Math.round((Date.now() - startTime) / 1e3);
+        const hint = preflight.kind === "hard-ceiling" ? `Prompt (${finalPromptTokens} tokens) exceeds the ${MAX_PROMPT_TOKENS2}-token hard ceiling. Split the request into smaller tasks.` : escalationTierSequence(modelTier, senderMaxTier).length === 0 ? `@${sender} is capped at **${senderMaxTier}**. Ask an admin to raise the allowlist.` : `Even the highest permitted tier cannot handle this prompt size. Reduce context.`;
+        result = `\u26D4 Pre-flight refused: ${preflight.reason}.
+
+${hint}`;
+        footer = `Kai \xB7 preflight-refused \xB7 0K in / 0K out \xB7 $0.0000 \xB7 0t \xB7 ${elapsedSec}s`;
         auditLog(auditDb, {
           sender,
           repo: `${owner}/${repo}`,
@@ -29784,7 +29835,7 @@ If you asked for a terse answer, drop the \`one sentence\` / \`briefly\` / \`tl;
           owner,
           repo,
           replyCommentId,
-          `> @${sender}: ${rawMessage}${tierNotice}
+          `> @${sender}: ${rawMessage}${tierNotice}${escalationNotice}
 
 ${result}
 
@@ -29795,7 +29846,7 @@ ${result}
         core3.warning(`Pre-flight refused paid call: ${preflight.reason}`);
         return;
       }
-      const maxTurns = getMaxTurns2(userMessage, modelTier);
+      const maxTurns = getMaxTurns2(userMessage, activeTier);
       core3.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);
       const heartbeatCtx = {
         octokit,
@@ -29803,19 +29854,19 @@ ${result}
         repo,
         replyCommentId,
         sender,
-        modelLabel: selectedModel.label
+        modelLabel: activeModel.label
       };
       const disallowed = disallowedToolsFor2(userMessage);
       if (disallowed.length) core3.info(`Gated tools: ${disallowed.join(",")}`);
       const r = await callClaudeCLIWithHeartbeat(
         anthropicApiKey,
-        selectedModel.id,
+        activeModel.id,
         finalPrompt,
         maxTurns,
         heartbeatCtx,
         auditDb,
         runId,
-        modelTier,
+        activeTier,
         disallowed
       );
       result = r.text;
@@ -29850,7 +29901,7 @@ ${result}
       }
       const durationSec = Math.round(durationMs / 1e3);
       footer = buildFooter(
-        selectedModel.label,
+        activeModel.label,
         rtkPct,
         cmpSavings,
         r.inputTokens,
@@ -29865,7 +29916,7 @@ ${result}
         sender,
         repo: `${owner}/${repo}`,
         prNumber: issueNumber,
-        model: selectedModel.label,
+        model: activeModel.label,
         message: rawMessage,
         durationMs,
         costUsd: r.costUsd,
@@ -29874,7 +29925,7 @@ ${result}
         rtkSavings: rtkPct,
         status: finalStatus
       });
-      recordRateLimit(auditDb, sender, `${owner}/${repo}`, modelTier, r.costUsd);
+      recordRateLimit(auditDb, sender, `${owner}/${repo}`, activeTier, r.costUsd);
       const newAuditId = latestAuditId(auditDb, sender, `${owner}/${repo}`, issueNumber);
       if (newAuditId != null && commitVerifiedOutcome !== null) {
         try {
@@ -29903,7 +29954,7 @@ ${result}
       owner,
       repo,
       replyCommentId,
-      `> @${sender}: ${rawMessage}${tierNotice}
+      `> @${sender}: ${rawMessage}${tierNotice}${escalationNotice}
 
 ${result}
 

@@ -136,3 +136,48 @@ test("REGRESSION: observed $0.25 run would be refused by pre-flight today", () =
   assert.equal(dec.allowed, false,
     "a 70K-token short-answer must NOT reach the paid model");
 });
+
+test("preflightBudget: hard-ceiling refusal has kind=hard-ceiling", () => {
+  const dec = preflightBudget("review this PR", MAX_PROMPT_TOKENS + 1, "haiku");
+  assert.equal(dec.allowed, false);
+  if (!dec.allowed) assert.equal(dec.kind, "hard-ceiling");
+});
+
+test("preflightBudget: short-answer-too-large refusal has correct kind", () => {
+  const dec = preflightBudget("one sentence please", SHORT_ANSWER_MAX_INPUT_TOKENS + 1, "haiku");
+  assert.equal(dec.allowed, false);
+  if (!dec.allowed) assert.equal(dec.kind, "short-answer-too-large");
+});
+
+test("preflightBudget: cost-over-cap refusal has kind=cost-over-cap", () => {
+  // Large review prompt that exceeds haiku budget
+  const dec = preflightBudget("review this PR", 25_000, "haiku");
+  assert.equal(dec.allowed, false);
+  if (!dec.allowed) assert.equal(dec.kind, "cost-over-cap");
+});
+
+test("preflightBudget: cost-over-cap on haiku is allowed on sonnet", () => {
+  // Large haiku prompt that exceeds budget (20K is at cap, use 20.5K to exceed)
+  const haikuDec = preflightBudget("review this PR", 20_500, "haiku");
+  assert.equal(haikuDec.allowed, false);
+  if (!haikuDec.allowed) assert.equal(haikuDec.kind, "cost-over-cap");
+
+  // Sonnet has tighter per-token budget: maxTurns=20, $0.50 cap
+  // Math: 20 × T × $3/M + 20 × 1K × $15/M ≤ $0.50
+  // = 20 × T × $3/M ≤ $0.20 → T ≤ 3333 tokens
+  // So a 3K prompt should pass sonnet
+  const sonnetDec = preflightBudget("review this PR", 3_000, "sonnet");
+  // 20 × 3K × $3/M = $0.18 input, + $0.30 output = $0.48 ✓
+  assert.equal(sonnetDec.allowed, true,
+    "3K-token review should be allowed under sonnet $0.50 cap");
+});
+
+test("preflightBudget: hard-ceiling is refused on all tiers", () => {
+  const prompt = "review";
+  for (const tier of ["haiku", "sonnet", "opus"] as const) {
+    const dec = preflightBudget(prompt, MAX_PROMPT_TOKENS + 1, tier);
+    assert.equal(dec.allowed, false);
+    if (!dec.allowed) assert.equal(dec.kind, "hard-ceiling",
+      `tier ${tier} must refuse hard-ceiling with kind=hard-ceiling`);
+  }
+});
