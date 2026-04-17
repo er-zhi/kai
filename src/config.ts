@@ -80,7 +80,7 @@ export function loadConfig(): Config {
     compressorUrl: envOr("KAI_COMPRESSOR_URL", "http://kai-compressor:8081"),
     compressorTimeoutMs: num("KAI_COMPRESSOR_TIMEOUT_MS", 1, 120_000, 1_500),
     compressorMinQueryTokens: num("KAI_COMPRESSOR_MIN_QUERY_TOKENS", 0, 1_000_000, 10),
-    compressorMinPromptTokens: num("KAI_COMPRESSOR_MIN_PROMPT_TOKENS", 0, 1_000_000, 2_200),
+    compressorMinPromptTokens: num("KAI_COMPRESSOR_MIN_PROMPT_TOKENS", 0, 1_000_000, 500),
     compressorBudgetHaiku: num("KAI_COMPRESSOR_BUDGET_HAIKU", 0, 1_000_000, 3_000),
     compressorBudgetSonnet: num("KAI_COMPRESSOR_BUDGET_SONNET", 0, 1_000_000, 10_000),
     compressorBudgetOpus: num("KAI_COMPRESSOR_BUDGET_OPUS", 0, 1_000_000, 20_000),
