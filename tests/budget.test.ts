@@ -59,6 +59,12 @@ test("getMaxTurns does not treat 'after ... fix' as an edit command", () => {
   assert.equal(getMaxTurns("validate after env_file fix", "haiku"), 12);
 });
 
+test("getMaxTurns keeps repo location questions cheap", () => {
+  // Regression: "which file starts HTTP app in repos/kodif-gateway?" hit the
+  // 12-turn default and was refused by preflight even though it is a small lookup.
+  assert.equal(getMaxTurns("which file starts HTTP app in repos/kodif-gateway?", "haiku"), 8);
+});
+
 test("disallowedToolsFor blocks every exploration tool on short-answer", () => {
   // Without these, Claude burned 173K tokens re-reading files on 2026-04-17.
   const blocked = disallowedToolsFor("biggest risk? one sentence.");

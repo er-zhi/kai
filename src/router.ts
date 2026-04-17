@@ -88,8 +88,15 @@ function decisionForIntent(intent: RouterIntent): RouterDecision["decision"] {
   }
 }
 
-function commitExpectedForIntent(intent: RouterIntent): boolean {
-  return intent === "write-fix" || intent === "commit-write";
+function normalizeIntent(intent: RouterIntent, message: string): RouterIntent {
+  if ((intent === "write-fix" || intent === "commit-write") && !shouldVerifyCommit(message)) {
+    return "simple-answer";
+  }
+  return intent;
+}
+
+function commitExpectedForIntent(intent: RouterIntent, message: string): boolean {
+  return (intent === "write-fix" || intent === "commit-write") && shouldVerifyCommit(message);
 }
 
 export class LocalRouterUnavailableError extends Error {
@@ -166,9 +173,15 @@ type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 function localRouterMessages(message: string): ChatMessage[] {
   return [{
     role: "user",
-    content: `You are a router for GitHub PR comments. Return one JSON object: {"intent":"..."}.
-Allowed intents: simple-answer, review, write-fix, commit-write, meta-template, spam-abuse, needs-input, stop, alert, unsupported.
-meta-template is ONLY for questions about Kai/help/usage. Questions about PR code, bugs, security, or risks are review.
+    content: `Route one GitHub PR comment. Return only JSON: {"intent":"..."}.
+Intents:
+simple-answer = asks for a fact, location, file path, brief explanation, or "which file/where".
+review = asks to assess code, PR changes, bugs, risks, security, correctness, or vulnerabilities.
+write-fix = asks to change code, edit files, patch, fix, add, refactor, commit, or push.
+meta-template = asks who Kai is, help, usage, or capabilities.
+spam-abuse = unrelated or abusive. needs-input = too vague to act. stop = asks to stop.
+If a comment mentions PR code, bugs, security, risk, or vulnerabilities, never use meta-template.
+If "start/starts" means where an app begins/runs, use simple-answer unless the user asks to change code.
 Comment: ${JSON.stringify(message)}`,
   }];
 }
@@ -245,14 +258,15 @@ export async function routeEventWithLocalLLM(
     try {
       const intent = await callRouterOnce(url, model, messages, timeoutMs);
       const elapsedMs = Date.now() - started;
-      const decision = decisionForIntent(intent);
+      const normalizedIntent = normalizeIntent(intent, rules.normalizedMessage);
+      const decision = decisionForIntent(normalizedIntent);
       return {
         ...rules,
-        intent,
+        intent: normalizedIntent,
         decision,
         confidence: 0.8,
         reason: `local-llm (${elapsedMs}ms)`,
-        commitExpected: commitExpectedForIntent(intent),
+        commitExpected: commitExpectedForIntent(normalizedIntent, rules.normalizedMessage),
         maxContextTokens: decision === "call-model" ? rules.maxContextTokens : 0,
         source: "local-llm",
       };

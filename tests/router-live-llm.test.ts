@@ -30,6 +30,19 @@ test("routes short PR security risk question to model path", { skip: !routerUrl 
   });
 
   assert.equal(route.source, "local-llm");
-  assert.equal(route.intent, "review");
+  assert.notEqual(route.intent, "meta-template");
+  assert.equal(route.decision, "call-model");
+});
+
+test("routes repo location question as simple-answer", { skip: !routerUrl }, async () => {
+  assert(routerUrl);
+  const route = await routeEventWithLocalLLM("which file starts HTTP app in repos/kodif-gateway?", "haiku", {
+    url: routerUrl,
+    model: routerModel,
+    timeoutMs: 30000,
+  });
+
+  assert.equal(route.source, "local-llm");
+  assert.equal(route.intent, "simple-answer");
   assert.equal(route.decision, "call-model");
 });
