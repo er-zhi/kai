@@ -27580,7 +27580,7 @@ var Octokit2 = Octokit.plugin(requestLog, legacyRestEndpointMethods, paginateRes
 
 // src/index.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs3 = require("node:fs");
+var import_node_fs4 = require("node:fs");
 
 // src/json.ts
 function isRecord(value) {
@@ -29219,6 +29219,104 @@ async function getPullRequestDiffDigest(octokit, owner, repo, pullNumber, maxCha
   return buildPullRequestDiffDigest(files, maxChars);
 }
 
+// src/repo-lookup.ts
+var import_node_fs3 = require("node:fs");
+var import_node_path2 = require("node:path");
+var MAX_FILES = 2e3;
+var MAX_FILE_BYTES = 512e3;
+var SKIP_DIRS = /* @__PURE__ */ new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "build",
+  "target",
+  ".next",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".gradle",
+  ".mvn"
+]);
+var ENTRYPOINT_PATTERNS = [
+  { framework: "Spring Boot", pattern: /\bSpringApplication\.run\s*\(/ },
+  { framework: "Spring Boot", pattern: /@SpringBootApplication\b/ },
+  { framework: "FastAPI", pattern: /\bFastAPI\s*\(/ },
+  { framework: "Flask", pattern: /\bFlask\s*\(/ },
+  { framework: "Express", pattern: /\bexpress\s*\(/ },
+  { framework: "Express", pattern: /\bapp\.listen\s*\(/ },
+  { framework: "NestJS", pattern: /\bNestFactory\.create\s*\(/ },
+  { framework: "Node HTTP", pattern: /\bcreateServer\s*\(/ },
+  { framework: "Uvicorn", pattern: /\buvicorn\.run\s*\(/ }
+];
+function parseServiceName(message) {
+  const match = /\brepos\/([A-Za-z0-9._-]+)/.exec(message);
+  return match?.[1] ?? null;
+}
+function isHttpEntrypointLookup(message) {
+  const normalized = message.toLowerCase();
+  return /\b(which file|what file|where)\b/.test(normalized) && /\b(start|starts|entrypoint|entry point|run|runs)\b/.test(normalized) && /\b(http|app|server|service)\b/.test(normalized);
+}
+function walkFiles(root) {
+  const out = [];
+  const stack = [root];
+  while (stack.length && out.length < MAX_FILES) {
+    const dir = stack.pop();
+    if (!dir) continue;
+    for (const entry of (0, import_node_fs3.readdirSync)(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) stack.push((0, import_node_path2.join)(dir, entry.name));
+      } else if (entry.isFile()) {
+        out.push((0, import_node_path2.join)(dir, entry.name));
+        if (out.length >= MAX_FILES) break;
+      }
+    }
+  }
+  return out;
+}
+function findEntrypoint(serviceDir) {
+  const files = walkFiles(serviceDir);
+  let scannedFiles = 0;
+  for (const file of files) {
+    const stats = (0, import_node_fs3.statSync)(file);
+    if (stats.size > MAX_FILE_BYTES) continue;
+    scannedFiles++;
+    const lines = (0, import_node_fs3.readFileSync)(file, "utf8").split(/\r?\n/);
+    for (const [index, line] of lines.entries()) {
+      for (const { framework, pattern } of ENTRYPOINT_PATTERNS) {
+        if (pattern.test(line)) {
+          return {
+            scannedFiles,
+            hit: {
+              filePath: `repos/${(0, import_node_path2.relative)((0, import_node_path2.join)(serviceDir, ".."), file)}`,
+              line: index + 1,
+              evidence: line.trim(),
+              framework
+            }
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+function answerRepoLookup(message, reposPath = "repos") {
+  if (!isHttpEntrypointLookup(message)) return null;
+  const service = parseServiceName(message);
+  if (!service) return null;
+  const serviceDir = (0, import_node_path2.join)(reposPath, service);
+  if (!(0, import_node_fs3.existsSync)(serviceDir) || !(0, import_node_fs3.statSync)(serviceDir).isDirectory()) return null;
+  const result = findEntrypoint(serviceDir);
+  if (!result) return null;
+  const { hit, scannedFiles } = result;
+  return {
+    hit,
+    scannedFiles,
+    answer: `**${hit.framework}** starts the HTTP app in \`${hit.filePath}\` at line ${hit.line}.
+
+Evidence: \`${hit.evidence}\``
+  };
+}
+
 // src/index.ts
 function requireReposPath() {
   const value = core3.getInput("repos_path") || process.env.KAI_REPOS_PATH;
@@ -29229,18 +29327,18 @@ function requireReposPath() {
 }
 function ensureLocalReposDirectory(reposPath) {
   const target = reposPath.trim();
-  if (!(0, import_node_fs3.existsSync)(target) || !(0, import_node_fs3.statSync)(target).isDirectory()) {
+  if (!(0, import_node_fs4.existsSync)(target) || !(0, import_node_fs4.statSync)(target).isDirectory()) {
     throw new Error(`KAI_REPOS_PATH must point to an existing repos directory: ${target}`);
   }
   const localPath = "repos";
-  const localStats = (0, import_node_fs3.lstatSync)(localPath, { throwIfNoEntry: false });
+  const localStats = (0, import_node_fs4.lstatSync)(localPath, { throwIfNoEntry: false });
   if (localStats) {
-    if (!(0, import_node_fs3.statSync)(localPath).isDirectory()) {
+    if (!(0, import_node_fs4.statSync)(localPath).isDirectory()) {
       throw new Error("Local repos path exists but is not a directory");
     }
     return;
   }
-  (0, import_node_fs3.symlinkSync)(target, localPath, "dir");
+  (0, import_node_fs4.symlinkSync)(target, localPath, "dir");
 }
 async function getPRCommentsContext(octokit, owner, repo, issueNumber, maxComments = 5, maxChars = 200) {
   try {
@@ -29626,6 +29724,41 @@ ${template}
         error: rateLimit.reason
       });
       core3.warning(`Rate-limited @${sender}: ${rateLimit.reason}`);
+      return;
+    }
+    const localLookup = answerRepoLookup(userMessage);
+    if (localLookup) {
+      const durationSec = Math.round((Date.now() - startTime) / 1e3);
+      const footer2 = `Kai \xB7 local repo lookup \xB7 RTK 0% \xB7 CMP 0% \xB7 0K in / 0K out \xB7 $0.0000 \xB7 0t \xB7 ${durationSec}s \xB7 scanned ${localLookup.scannedFiles} files`;
+      const { data: lookupReply } = await octokit.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body: `> @${sender}: ${rawMessage}${tierNotice}
+
+${localLookup.answer}
+
+---
+<sub>${footer2}</sub>`
+      });
+      sessionUpdate(auditDb, runId, "completed", {
+        status: "completed-local-repo-lookup",
+        replyCommentId: lookupReply.id
+      });
+      auditLog(auditDb, {
+        sender,
+        repo: `${owner}/${repo}`,
+        prNumber: issueNumber,
+        model: "local-repo-lookup",
+        message: rawMessage,
+        durationMs: Date.now() - startTime,
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        rtkSavings: "0.0%",
+        status: "completed-local-repo-lookup"
+      });
+      core3.info(`Local repo lookup hit: ${localLookup.hit.filePath}:${localLookup.hit.line} (${localLookup.hit.framework}); scanned=${localLookup.scannedFiles}`);
       return;
     }
     requireClaudeCLI();

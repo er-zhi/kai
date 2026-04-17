@@ -18,6 +18,7 @@ import { initAuditDb, latestAuditId, checkRateLimit, recordRateLimit, resolveAll
 import { parseModelFromMessage, requireClaudeCLI, requireRTK, buildHeartbeatFrame, callClaudeCLIWithHeartbeat, safeUpdate, type HeartbeatContext } from "./runner";
 import { getPullRequestDiffDigest, truncateDiffDigest } from "./pr-diff";
 import { buildRepoContextInstructions } from "./repo-context";
+import { answerRepoLookup } from "./repo-lookup";
 import {
   disallowedToolsFor as budgetDisallowedToolsFor,
   getMaxTurns as budgetGetMaxTurns,
@@ -468,6 +469,27 @@ async function run() {
         costUsd: 0, tokensIn: 0, tokensOut: 0, status: "rate-limited", error: rateLimit.reason,
       });
       core.warning(`Rate-limited @${sender}: ${rateLimit.reason}`);
+      return;
+    }
+
+    const localLookup = answerRepoLookup(userMessage);
+    if (localLookup) {
+      const durationSec = Math.round((Date.now() - startTime) / 1000);
+      const footer = `Kai · local repo lookup · RTK 0% · CMP 0% · 0K in / 0K out · $0.0000 · 0t · ${durationSec}s · scanned ${localLookup.scannedFiles} files`;
+      const { data: lookupReply } = await octokit.issues.createComment({
+        owner, repo, issue_number: issueNumber,
+        body: `> @${sender}: ${rawMessage}${tierNotice}\n\n${localLookup.answer}\n\n---\n<sub>${footer}</sub>`,
+      });
+      sessionUpdate(auditDb, runId, "completed", {
+        status: "completed-local-repo-lookup",
+        replyCommentId: lookupReply.id,
+      });
+      auditLog(auditDb, {
+        sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
+        model: "local-repo-lookup", message: rawMessage, durationMs: Date.now() - startTime,
+        costUsd: 0, tokensIn: 0, tokensOut: 0, rtkSavings: "0.0%", status: "completed-local-repo-lookup",
+      });
+      core.info(`Local repo lookup hit: ${localLookup.hit.filePath}:${localLookup.hit.line} (${localLookup.hit.framework}); scanned=${localLookup.scannedFiles}`);
       return;
     }
 
