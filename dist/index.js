@@ -28805,9 +28805,10 @@ var import_node_child_process = require("node:child_process");
 var import_node_fs2 = require("node:fs");
 
 // src/rtk.ts
+var RTK_NOT_TRACKED = "n/a";
 function parseRtkSavings(raw) {
   const text = raw.trim();
-  if (!text) return "";
+  if (!text) return RTK_NOT_TRACKED;
   const percentMatches = [
     text.match(/\((\d+(?:\.\d+)?)%\)/),
     text.match(/(?:savings?|saved|gain|improvement|reduction)\D+(\d+(?:\.\d+)?)%/i),
@@ -28819,7 +28820,7 @@ function parseRtkSavings(raw) {
     const pct = Number(`0.${decimalMatch[1]}`) * 100;
     if (Number.isFinite(pct) && pct > 0) return `${pct.toFixed(1)}%`;
   }
-  return "";
+  return RTK_NOT_TRACKED;
 }
 
 // src/budget.ts
@@ -29022,11 +29023,16 @@ function parseModelFromMessage(message) {
 function buildHeartbeatFrame(tick, elapsed, modelLabel) {
   return spinnerFrame(tick, elapsed, modelLabel);
 }
+function effortForTier(tier) {
+  if (tier === "opus") return "high";
+  if (tier === "sonnet") return "medium";
+  return "low";
+}
 async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, heartbeat, db, runId, modelTier, disallowedTools = []) {
   const isRoot = isRootUser();
   sessionUpdate(db, runId, "cli-attempt-1", { attempt: 1 });
   try {
-    const result = await runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, heartbeat, db, runId, disallowedTools);
+    const result = await runCLIWithHeartbeat(apiKey, modelId, modelTier, prompt, maxTurns, isRoot, heartbeat, db, runId, disallowedTools);
     sessionUpdate(db, runId, "completed", { status: "completed" });
     return result;
   } catch (e) {
@@ -29036,9 +29042,24 @@ async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, hea
     throw e;
   }
 }
-async function runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, hb, db, runId, disallowedTools = []) {
+async function runCLIWithHeartbeat(apiKey, modelId, modelTier, prompt, maxTurns, isRoot, hb, db, runId, disallowedTools = []) {
   return new Promise((resolve, reject) => {
-    const claudeArgs = ["-p", "--dangerously-skip-permissions", "--output-format", "json", "--max-turns", String(maxTurns), "--model", modelId];
+    const tierCapUsd = MAX_COST_USD_BY_TIER[modelTier] ?? MAX_COST_USD_BY_TIER.haiku;
+    const claudeArgs = [
+      "-p",
+      "--dangerously-skip-permissions",
+      "--output-format",
+      "json",
+      "--max-turns",
+      String(maxTurns),
+      "--model",
+      modelId,
+      "--effort",
+      effortForTier(modelTier),
+      "--max-budget-usd",
+      String(tierCapUsd),
+      "--exclude-dynamic-system-prompt-sections"
+    ];
     if (disallowedTools.length) claudeArgs.push("--disallowed-tools", disallowedTools.join(","));
     const startTime = Date.now();
     let output = "";
@@ -29089,7 +29110,7 @@ async function runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, hb
       }
       try {
         const json = parseCliJsonPayload(output);
-        let rtkSavings = "";
+        let rtkSavings = RTK_NOT_TRACKED;
         try {
           const gainCmd = isRoot ? `su -s /bin/bash kai -c 'rtk gain 2>/dev/null'` : `rtk gain 2>/dev/null`;
           const raw = (0, import_node_child_process.execSync)(gainCmd, { encoding: "utf-8", timeout: 5e3 }).trim();
@@ -30104,7 +30125,7 @@ ${result}
         commitVerifiedOutcome = false;
       }
       const durationMs = Date.now() - startTime;
-      const rtkPct = r.rtkSavings || "\u2014 %";
+      const rtkPct = r.rtkSavings;
       const rtkBypassed = r.rtkSavings === "0.0%";
       if (rtkBypassed) {
         core3.error(`CRITICAL: RTK savings = 0% \u2014 RTK was bypassed or tracking is broken. Check /home/kai/.local/share/rtk/history.db`);

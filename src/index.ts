@@ -816,8 +816,11 @@ async function run() {
       }
 
       const durationMs = Date.now() - startTime;
-      const rtkPct = r.rtkSavings || "— %";
-      const rtkBypassed = r.rtkSavings === "0.0%"; // Only warn if explicitly zero, not if unavailable
+      // r.rtkSavings is always a non-empty string: either a measured percent
+      // like "41.0%", the sentinel "0.0%" (measured zero = bypass), or the
+      // sentinel "n/a" (not tracked — rtk binary missing or output unparseable).
+      const rtkPct = r.rtkSavings;
+      const rtkBypassed = r.rtkSavings === "0.0%"; // Only warn on measured zero, not unavailable
       if (rtkBypassed) {
         core.error(`CRITICAL: RTK savings = 0% — RTK was bypassed or tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
         result += `\n\n> ⚠️ **RTK bypassed** — no token savings recorded for this call. Operator: verify hook in \`$HOME/.claude/settings.json\`.`;

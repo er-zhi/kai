@@ -5,9 +5,9 @@ import type { DatabaseSync } from "node:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { createLogger, errorMeta } from "./log";
 import type { RouterDecision } from "./types";
-import { parseRtkSavings } from "./rtk";
+import { parseRtkSavings, RTK_NOT_TRACKED } from "./rtk";
 import { sessionUpdate } from "./audit";
-import { calculateAnthropicUsageCostUsd } from "./budget";
+import { calculateAnthropicUsageCostUsd, MAX_COST_USD_BY_TIER } from "./budget";
 import { buildClaudeSpawnSpec } from "./runner-spawn";
 import { buildRepoContextInstructions } from "./repo-context";
 
@@ -209,6 +209,15 @@ export function buildHeartbeatFrame(tick: number, elapsed: number, modelLabel: s
   return spinnerFrame(tick, elapsed, modelLabel);
 }
 
+// Map tier to Claude CLI --effort level. High for opus (quality-sensitive
+// agentic work), medium for sonnet, low for haiku (fast/cheap). xhigh/max
+// reserved — they scale cost and we already cap at tier level.
+function effortForTier(tier: string): string {
+  if (tier === "opus") return "high";
+  if (tier === "sonnet") return "medium";
+  return "low";
+}
+
 export async function callClaudeCLIWithHeartbeat(
   apiKey: string,
   modelId: string,
@@ -223,7 +232,7 @@ export async function callClaudeCLIWithHeartbeat(
   const isRoot = isRootUser();
   sessionUpdate(db, runId, "cli-attempt-1", { attempt: 1 });
   try {
-    const result = await runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, heartbeat, db, runId, disallowedTools);
+    const result = await runCLIWithHeartbeat(apiKey, modelId, modelTier, prompt, maxTurns, isRoot, heartbeat, db, runId, disallowedTools);
     sessionUpdate(db, runId, "completed", { status: "completed" });
     return result;
   } catch (e: unknown) {
@@ -237,6 +246,7 @@ export async function callClaudeCLIWithHeartbeat(
 async function runCLIWithHeartbeat(
   apiKey: string,
   modelId: string,
+  modelTier: string,
   prompt: string,
   maxTurns: number,
   isRoot: boolean,
@@ -246,7 +256,21 @@ async function runCLIWithHeartbeat(
   disallowedTools: string[] = [],
 ): Promise<CLIResult> {
   return new Promise((resolve, reject) => {
-    const claudeArgs = ["-p", "--dangerously-skip-permissions", "--output-format", "json", "--max-turns", String(maxTurns), "--model", modelId];
+    // Tier cap acts as a second defence layer: CLI enforces at runtime even if
+    // preflight estimation was off. --exclude-dynamic-system-prompt-sections
+    // moves per-machine state out of the system prompt so the stable prefix
+    // stays cacheable across runs. --effort tunes thinking depth per tier.
+    const tierCapUsd = MAX_COST_USD_BY_TIER[modelTier] ?? MAX_COST_USD_BY_TIER.haiku;
+    const claudeArgs = [
+      "-p",
+      "--dangerously-skip-permissions",
+      "--output-format", "json",
+      "--max-turns", String(maxTurns),
+      "--model", modelId,
+      "--effort", effortForTier(modelTier),
+      "--max-budget-usd", String(tierCapUsd),
+      "--exclude-dynamic-system-prompt-sections",
+    ];
     if (disallowedTools.length) claudeArgs.push("--disallowed-tools", disallowedTools.join(","));
     const startTime = Date.now();
     let output = "";
@@ -295,12 +319,12 @@ async function runCLIWithHeartbeat(
       }
       try {
         const json = parseCliJsonPayload(output);
-        let rtkSavings = "";
+        let rtkSavings: string = RTK_NOT_TRACKED;
         try {
           const gainCmd = isRoot ? `su -s /bin/bash kai -c 'rtk gain 2>/dev/null'` : `rtk gain 2>/dev/null`;
           const raw = execSync(gainCmd, { encoding: "utf-8", timeout: 5000 }).trim();
           rtkSavings = parseRtkSavings(raw);
-        } catch { /* */ }
+        } catch { /* RTK binary missing or failed — keep sentinel */ }
         let resultText = json.result ?? json.content ?? "";
         if (!resultText && json.is_error) {
           resultText = `⚠️ Task incomplete (${json.subtype ?? "error"}): reached ${json.num_turns ?? "?"} turns. Ask me to continue or simplify the request.`;
