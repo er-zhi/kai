@@ -4,6 +4,13 @@ function formatK(tokens: number): string {
   return `${Math.round(tokens / 1000)}`;
 }
 
+// Passive display layer. Callers pass pre-formatted values from upstream
+// trackers (rtk.ts, compressor.ts, runner.ts). This function does NOT compute,
+// validate, or decide anything — business logic must read from source values,
+// never by re-parsing the returned string.
+//
+// rtkSavings: "41.0%" (measured), "0.0%" (measured bypass), or "n/a" (not tracked).
+// cmpSavings: "38%" (measured) or "0%" (skipped / no reduction).
 export function buildFooter(
   modelLabel: string,
   rtkSavings: string,

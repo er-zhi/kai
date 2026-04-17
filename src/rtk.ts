@@ -1,6 +1,10 @@
+// Sentinel for cases where RTK did not run or its output could not be parsed.
+// Distinct from "0.0%" which means RTK ran and measured zero savings (bypass).
+export const RTK_NOT_TRACKED = "n/a";
+
 export function parseRtkSavings(raw: string): string {
   const text = raw.trim();
-  if (!text) return "";
+  if (!text) return RTK_NOT_TRACKED;
   const percentMatches = [
     text.match(/\((\d+(?:\.\d+)?)%\)/),
     text.match(/(?:savings?|saved|gain|improvement|reduction)\D+(\d+(?:\.\d+)?)%/i),
@@ -12,5 +16,5 @@ export function parseRtkSavings(raw: string): string {
     const pct = Number(`0.${decimalMatch[1]}`) * 100;
     if (Number.isFinite(pct) && pct > 0) return `${pct.toFixed(1)}%`;
   }
-  return "";
+  return RTK_NOT_TRACKED;
 }
