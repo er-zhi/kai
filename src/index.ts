@@ -567,11 +567,15 @@ function buildCLIPrompt(
 function getMaxTurns(message: string, modelTier: string): number {
   if (modelTier === "opus") return 25;
   if (modelTier === "sonnet") return 20;
-  // Haiku: scale by task type
-  const needsWrite = /fix|commit|push|apply|create|patch|refactor/i.test(message);
-  if (needsWrite) return 20; // write tasks need more turns
-  const simple = /^(top|list|one-liner|quick|is this|what|summarize)/i.test(message);
-  return simple ? 5 : 10;
+  // Haiku: scale by task type. Earlier we used 5 for "simple" read tasks which
+  // repeatedly hit error_max_turns (Claude needs ≥1 diff-read + ≥1 file-read +
+  // 1 synthesis = 3-5 turns minimum; leave headroom). "what is the biggest risk"
+  // also matched simple but is actually a review — bumped to 12 default.
+  const needsWrite = /fix|commit|push|apply|create|patch|refactor|document/i.test(message);
+  if (needsWrite) return 20;
+  const isTrulySimple = message.length < 50
+    && /^(top|list|one-liner|quick|summarize|how many|which file)/i.test(message);
+  return isTrulySimple ? 8 : 12;
 }
 
 const HEARTBEAT_INTERVAL_MS = 15_000;

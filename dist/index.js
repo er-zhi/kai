@@ -28869,10 +28869,10 @@ ${prCommentsContext}`);
 function getMaxTurns(message, modelTier) {
   if (modelTier === "opus") return 25;
   if (modelTier === "sonnet") return 20;
-  const needsWrite = /fix|commit|push|apply|create|patch|refactor/i.test(message);
+  const needsWrite = /fix|commit|push|apply|create|patch|refactor|document/i.test(message);
   if (needsWrite) return 20;
-  const simple = /^(top|list|one-liner|quick|is this|what|summarize)/i.test(message);
-  return simple ? 5 : 10;
+  const isTrulySimple = message.length < 50 && /^(top|list|one-liner|quick|summarize|how many|which file)/i.test(message);
+  return isTrulySimple ? 8 : 12;
 }
 var HEARTBEAT_INTERVAL_MS = 15e3;
 var CLI_TIMEOUT_MS = 3e5;
