@@ -7,10 +7,15 @@ export const OFFTOPIC_TEMPLATE = `Kai only handles development work related to o
 export const CLARIFICATION_TEMPLATE = `I'm not sure what you're asking. Can you clarify:
 
 1. **Which service/component?** (e.g., "in the executor-service" or "in this PR")
-2. **What kind of help?** (e.g., "fix this bug", "review this code", "suggest architecture")
-3. **Scope?** (e.g., "in this repository" or "across all services")
+2. **What kind of help?** Examples:
+   - **Code review**: Review this PR for bugs/security/performance
+   - **Architecture questions**: How do these services interact across the platform?
+   - **Bug fixes**: What's wrong with this code and how to fix it?
+   - **Testing**: Add tests or strengthen test coverage for this code
+   - **Commits**: Create/update commits for these changes
+3. **Scope?** (e.g., "in this repository" or "across all Kodif services")
 
-Provide a specific task and I'll help with minimal token spend.`;
+Provide a specific task with context and I'll help with minimal token spend.`;
 
 export function templateForRoute(route: RouterDecision): string {
   if (route.intent === "spam-abuse") return OFFTOPIC_TEMPLATE;
