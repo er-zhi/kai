@@ -8,7 +8,7 @@ services:
       - kai-router-gguf:/models
     command:
       - -m
-      - /models/${KAI_ROUTER_GGUF:-qwen2.5-0.5b-instruct-q4_k_m.gguf}
+      - /models/${KAI_ROUTER_GGUF:-functiongemma-270m-it-q8_0.gguf}
       - --host
       - 0.0.0.0
       - --port
@@ -31,8 +31,8 @@ services:
     volumes:
       - kai-router-gguf:/models
     environment:
-      KAI_ROUTER_HF_REPO: ${KAI_ROUTER_HF_REPO:-Qwen/Qwen2.5-0.5B-Instruct-GGUF}
-      KAI_ROUTER_GGUF: ${KAI_ROUTER_GGUF:-qwen2.5-0.5b-instruct-q4_k_m.gguf}
+      KAI_ROUTER_HF_REPO: ${KAI_ROUTER_HF_REPO:-ggml-org/functiongemma-270m-it-GGUF}
+      KAI_ROUTER_GGUF: ${KAI_ROUTER_GGUF:-functiongemma-270m-it-q8_0.gguf}
     command:
       - sh
       - -c

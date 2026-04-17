@@ -16,6 +16,8 @@ test("uses identity template for meta-template intent", () => {
   const route = fakeRoute("meta-template", "reply-template");
   assert.equal(templateForRoute(route), META_TEMPLATE);
   assert.match(templateForRoute(route), /I'm Kai/);
+  assert.match(templateForRoute(route), /Response by local LLM/i);
+  assert.match(templateForRoute(route), /FunctionGemma-270M/);
 });
 
 test("uses off-topic template for spam-abuse intent", () => {

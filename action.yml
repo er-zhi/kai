@@ -20,7 +20,7 @@ inputs:
   router_model:
     description: 'Local model used for cheap event filtering'
     required: false
-    default: 'qwen2.5-0.5b-instruct'
+    default: 'FunctionGemma-270M'
 
 runs:
   using: 'node24'

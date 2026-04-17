@@ -4,6 +4,7 @@ import { Octokit } from "@octokit/rest";
 import { execSync, spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
+import { buildFooter, buildRouterFooter } from "./footer";
 import { isMetaQuestion, routeEventWithLocalLLM, shouldVerifyCommit, type RouterDecision } from "./router";
 import { META_TEMPLATE, templateForRoute } from "./templates";
 
@@ -225,29 +226,6 @@ To explore: kodif-team/architect — .claude/CLAUDE.md, service-summaries/, db-s
 
 function isArchitectureQuestion(msg: string): boolean {
   return /architect|infra|service|microservice|system|overview|how.*work|database|schema|stack/i.test(msg);
-}
-
-function buildFooter(
-  modelLabel: string,
-  rtkSavings: string,
-  inputTokens: number,
-  outputTokens: number,
-  costUsd: number,
-  numTurns: number,
-  durationSec: number,
-  cacheReadTokens = 0,
-): string {
-  const inK = Math.round(inputTokens / 1000);
-  const outK = Math.round(outputTokens / 1000);
-  const cachePct = inputTokens > 0 ? Math.round((cacheReadTokens / inputTokens) * 100) : 0;
-  const cacheTag = cachePct > 0 ? ` · cache ${cachePct}%` : "";
-  return `Kai · ${modelLabel} · [RTK](https://github.com/rtk-ai/rtk) ${rtkSavings}${cacheTag} · ${inK}K in / ${outK}K out · $${costUsd.toFixed(4)} · ${numTurns}t · ${durationSec}s · deeper analysis: use sonnet / use opus`;
-}
-
-// For answers served entirely by the local router (template reply / needs-input),
-// show the router model and zero out all paid-model metrics.
-function buildRouterFooter(routerModel: string, durationSec: number): string {
-  return `Kai · ${routerModel} · RTK 0% · cache 0% · 0K in / 0K out · $0.0000 · 0t · ${durationSec}s · deeper analysis: unavailable`;
 }
 
 function shellQuote(value: string): string {
@@ -552,7 +530,7 @@ async function run() {
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");
     const routerUrl = core.getInput("router_url") || process.env.KAI_ROUTER_URL;
-    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "qwen2.5-0.5b-instruct";
+    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "FunctionGemma-270M";
 
     const { context } = github;
     const event = context.eventName;

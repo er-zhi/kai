@@ -27583,6 +27583,18 @@ var import_node_child_process = require("node:child_process");
 var import_node_sqlite = require("node:sqlite");
 var import_node_fs = require("node:fs");
 
+// src/footer.ts
+function buildFooter(modelLabel, rtkSavings, inputTokens, outputTokens, costUsd, numTurns, durationSec, cacheReadTokens = 0) {
+  const inK = Math.round(inputTokens / 1e3);
+  const outK = Math.round(outputTokens / 1e3);
+  const cachePct = inputTokens > 0 ? Math.round(cacheReadTokens / inputTokens * 100) : 0;
+  const cacheTag = cachePct > 0 ? ` \xB7 cache ${cachePct}%` : "";
+  return `Kai \xB7 ${modelLabel} \xB7 [RTK](https://github.com/rtk-ai/rtk) ${rtkSavings}${cacheTag} \xB7 ${inK}K in / ${outK}K out \xB7 $${costUsd.toFixed(4)} \xB7 ${numTurns}t \xB7 ${durationSec}s \xB7 deeper analysis: use sonnet / use opus`;
+}
+function buildRouterFooter(routerModel, durationSec) {
+  return `Kai \xB7 local LLM (${routerModel}) \xB7 RTK 0% \xB7 cache 0% \xB7 0 in / 0 out \xB7 $0 \xB7 0t \xB7 ${durationSec}s \xB7 deeper analysis: unavailable`;
+}
+
 // src/router.ts
 function normalizeWhitespace(message) {
   return message.replace(/\s+/g, " ").trim();
@@ -27704,7 +27716,7 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "qwen2.5-0.5b-instruct",
+        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "FunctionGemma-270M",
         messages: localRouterMessages(rules.normalizedMessage),
         stream: false,
         temperature: 0,
@@ -27744,7 +27756,7 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
 }
 
 // src/templates.ts
-var META_TEMPLATE = `I'm Kai, the Kodif project assistant. My goal is to help with minimal token spend and provide a good experience for Kodif architecture questions. Usage: write a comment with a task for @kai; for deeper analysis add \`use sonnet\` or \`use opus\`; loop mode (under development) is a sandbox where the agent will work with full permissions, autonomously commit and open PRs.`;
+var META_TEMPLATE = `I'm Kai, the Kodif project assistant. My goal is to help with minimal token spend and provide a good experience for Kodif architecture questions. Response by local LLM (FunctionGemma-270M). Usage: write a comment with a task for @kai; for deeper analysis add \`use sonnet\` or \`use opus\`; loop mode (under development) is a sandbox where the agent will work with full permissions, autonomously commit and open PRs.`;
 var OFFTOPIC_TEMPLATE = `Kai only handles development work related to our platform: code review, bug fixes, tests, PRs, architecture, deployments, logs, metrics, and engineering tasks. Please ask a work-related development question or provide a specific repo/PR/task.`;
 function templateForRoute(route) {
   return route.intent === "spam-abuse" ? OFFTOPIC_TEMPLATE : META_TEMPLATE;
@@ -27965,16 +27977,6 @@ To explore: kodif-team/architect \u2014 .claude/CLAUDE.md, service-summaries/, d
 `.trim();
 function isArchitectureQuestion(msg) {
   return /architect|infra|service|microservice|system|overview|how.*work|database|schema|stack/i.test(msg);
-}
-function buildFooter(modelLabel, rtkSavings, inputTokens, outputTokens, costUsd, numTurns, durationSec, cacheReadTokens = 0) {
-  const inK = Math.round(inputTokens / 1e3);
-  const outK = Math.round(outputTokens / 1e3);
-  const cachePct = inputTokens > 0 ? Math.round(cacheReadTokens / inputTokens * 100) : 0;
-  const cacheTag = cachePct > 0 ? ` \xB7 cache ${cachePct}%` : "";
-  return `Kai \xB7 ${modelLabel} \xB7 [RTK](https://github.com/rtk-ai/rtk) ${rtkSavings}${cacheTag} \xB7 ${inK}K in / ${outK}K out \xB7 $${costUsd.toFixed(4)} \xB7 ${numTurns}t \xB7 ${durationSec}s \xB7 deeper analysis: use sonnet / use opus`;
-}
-function buildRouterFooter(routerModel, durationSec) {
-  return `Kai \xB7 ${routerModel} \xB7 RTK 0% \xB7 cache 0% \xB7 0K in / 0K out \xB7 $0.0000 \xB7 0t \xB7 ${durationSec}s \xB7 deeper analysis: unavailable`;
 }
 function shellQuote(value) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -28239,7 +28241,7 @@ async function run() {
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");
     const routerUrl = core.getInput("router_url") || process.env.KAI_ROUTER_URL;
-    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "qwen2.5-0.5b-instruct";
+    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "FunctionGemma-270M";
     const { context: context2 } = github;
     const event = context2.eventName;
     let commentBody = "", commentId = 0, issueNumber = 0;
