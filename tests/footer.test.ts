@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildRouterFooter } from "../src/footer";
+import { buildFooter, buildRouterFooter } from "../src/footer";
 
 test("router footer explicitly marks local LLM", () => {
-  const footer = buildRouterFooter("FunctionGemma-270M", 1);
+  const footer = buildRouterFooter("LFM2-350M", 1);
   assert.match(footer, /local LLM/i);
-  assert.match(footer, /FunctionGemma-270M/);
+  assert.match(footer, /LFM2-350M/);
+});
+
+test("paid footer includes CMP savings", () => {
+  const footer = buildFooter("Sonnet", "41%", "38%", 18000, 1200, 0.0234, 4, 12, 7000);
+  assert.match(footer, /RTK.*41%/i);
+  assert.match(footer, /CMP 38%/i);
+  assert.match(footer, /18K in \/ 1K out/);
 });

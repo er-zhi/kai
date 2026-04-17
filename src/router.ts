@@ -115,12 +115,82 @@ export class LocalRouterUnavailableError extends Error {
   }
 }
 
+// Tolerate markdown-wrapped / trailing-prose responses from small local models.
+function extractJsonObject(raw: string): string | null {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const source = fenced ? fenced[1] : raw;
+  const start = source.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i];
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = true; continue; }
+    if (ch === "\"") { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) return source.slice(start, i + 1); }
+  }
+  return null;
+}
+
 function parseIntentOnly(raw: string): RouterIntent | null {
   try {
-    const parsed = JSON.parse(raw) as { intent?: string };
+    const candidate = extractJsonObject(raw) ?? raw;
+    const parsed = JSON.parse(candidate) as { intent?: string };
     return ROUTER_INTENTS.includes(parsed.intent as RouterIntent) ? (parsed.intent as RouterIntent) : null;
   } catch {
     return null;
+  }
+}
+
+export type SuggestedTier = "haiku" | "sonnet" | "opus";
+const TIER_VALUES: readonly SuggestedTier[] = ["haiku", "sonnet", "opus"];
+
+const TIER_RESPONSE_FORMAT = {
+  type: "json_object",
+  schema: {
+    type: "object",
+    properties: { tier: { type: "string", enum: TIER_VALUES } },
+    required: ["tier"],
+  },
+};
+
+export async function suggestTierWithLocalLLM(
+  message: string,
+  options: { url: string; model?: string; timeoutMs?: number },
+): Promise<SuggestedTier | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 2000);
+  try {
+    const res = await fetch(`${options.url.replace(/\/$/, "")}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: options.model ?? "LFM2-350M",
+        messages: [{
+          role: "user",
+          content: `Pick model tier for this task. haiku=simple Q/A, small edits. sonnet=multi-file refactor, code review, bug fix requiring reasoning. opus=architecture decisions, complex cross-service changes.\nTask: ${JSON.stringify(message)}\nReturn {"tier":"haiku"} or {"tier":"sonnet"} or {"tier":"opus"}.`,
+        }],
+        stream: false,
+        temperature: 0,
+        max_tokens: 20,
+        response_format: TIER_RESPONSE_FORMAT,
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const body = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = body.choices?.[0]?.message?.content ?? "";
+    try {
+      const candidate = extractJsonObject(content) ?? content;
+      const parsed = JSON.parse(candidate) as { tier?: string };
+      return TIER_VALUES.includes(parsed.tier as SuggestedTier) ? parsed.tier as SuggestedTier : null;
+    } catch { return null; }
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -139,9 +209,22 @@ Comment: ${JSON.stringify(message)}`,
   }];
 }
 
-// GBNF grammar: constrain output to a single enum value wrapped in the smallest JSON we need.
-const ROUTER_GRAMMAR = 'root ::= "{\\"intent\\":\\"" intent "\\"}"\n'
-  + 'intent ::= "simple-answer" | "review" | "write-fix" | "commit-write" | "job-candidate" | "meta-template" | "spam-abuse" | "needs-input" | "stop" | "alert" | "unsupported" | "ignore"';
+// llama.cpp server's OpenAI-compat way to constrain output (2026): response_format
+// with a JSON schema. Works across models regardless of jinja template quirks.
+// Ref: llama.cpp server README — /v1/chat/completions response_format.
+const ROUTER_RESPONSE_FORMAT = {
+  type: "json_object",
+  schema: {
+    type: "object",
+    properties: {
+      intent: {
+        type: "string",
+        enum: ROUTER_INTENTS,
+      },
+    },
+    required: ["intent"],
+  },
+};
 
 export async function routeEventWithLocalLLM(
   rawMessage: string,
@@ -167,12 +250,12 @@ export async function routeEventWithLocalLLM(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "FunctionGemma-270M",
+        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "LFM2-350M",
         messages: localRouterMessages(rules.normalizedMessage),
         stream: false,
         temperature: 0,
-        max_tokens: 20,
-        grammar: ROUTER_GRAMMAR,
+        max_tokens: 40,
+        response_format: ROUTER_RESPONSE_FORMAT,
       }),
       signal: controller.signal,
     });

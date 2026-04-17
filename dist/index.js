@@ -27581,15 +27581,338 @@ var Octokit2 = Octokit.plugin(requestLog, legacyRestEndpointMethods, paginateRes
 // src/index.ts
 var import_node_child_process = require("node:child_process");
 var import_node_sqlite = require("node:sqlite");
+var import_node_fs2 = require("node:fs");
+
+// src/compressor.ts
+var DEFAULT_BUDGETS = {
+  haiku: 3e3,
+  sonnet: 1e4,
+  opus: 2e4
+};
+var MIN_PROMPT_TOKENS = 1200;
+function resolveNonNegativeInt(value, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  const normalized = Math.floor(value);
+  return normalized >= 0 ? normalized : fallback;
+}
+var LocalCompressorUnavailableError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LocalCompressorUnavailableError";
+  }
+};
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+function resolveCompressionBudget(tier, overrides) {
+  const key = tier.toLowerCase();
+  return overrides?.[key] ?? DEFAULT_BUDGETS[key] ?? DEFAULT_BUDGETS.haiku;
+}
+function splitPromptIntoChunks(prompt) {
+  const sections = prompt.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  if (sections.length === 0) {
+    return [];
+  }
+  const chunks = sections.map((text, idx) => ({
+    id: idx + 1,
+    text,
+    pinned: idx === 0 || idx === sections.length - 1 || /^(Task|Router|Kai,)/i.test(text)
+  }));
+  return chunks;
+}
+function extractJsonObject(raw) {
+  const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const source = fencedMatch ? fencedMatch[1] : raw;
+  const start = source.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+function parseCompressorPayload(raw, maxChunkId) {
+  let parsed;
+  const jsonSource = extractJsonObject(raw) ?? raw.trim();
+  try {
+    parsed = JSON.parse(jsonSource);
+  } catch {
+    if (process.env.KAI_DEBUG_COMPRESSOR === "1") {
+      console.error("[kai-compressor] raw response (first 400 chars):", raw.slice(0, 400));
+    }
+    throw new LocalCompressorUnavailableError("local compressor returned invalid JSON");
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new LocalCompressorUnavailableError("local compressor returned non-object payload");
+  }
+  const shaped = parsed;
+  const rawIds = Array.isArray(shaped.keep_ids) ? shaped.keep_ids : [];
+  const keepIds = rawIds.map((item) => {
+    if (Number.isInteger(item)) return item;
+    if (item && typeof item === "object" && "id" in item && Number.isInteger(item.id)) {
+      return item.id;
+    }
+    return null;
+  }).filter((id) => id !== null && id >= 1 && id <= maxChunkId);
+  if (keepIds.length === 0) {
+    throw new LocalCompressorUnavailableError("local compressor returned empty keep_ids");
+  }
+  const summaries = Array.isArray(shaped.summaries) ? shaped.summaries.filter((s) => !!s && Number.isInteger(s.id) && s.id >= 1 && s.id <= maxChunkId && typeof s.text === "string" && s.text.trim().length > 0) : [];
+  return { keep_ids: [...new Set(keepIds)], summaries };
+}
+function compressorMessages(userMessage, chunks) {
+  const serializedChunks = chunks.map((chunk) => ({
+    id: chunk.id,
+    pinned: chunk.pinned,
+    text: chunk.text.slice(0, 2e3)
+  }));
+  return [{
+    role: "user",
+    content: [
+      "Compress this Claude prompt context for a code-assistant task.",
+      "Task query:",
+      JSON.stringify(userMessage),
+      "Rules:",
+      "- Keep all pinned chunks.",
+      "- Prefer extractive keep/drop on code and diffs.",
+      "- Summarize only prose/log chunks.",
+      '- Return strict JSON only: {"keep_ids":[...],"summaries":[{"id":N,"text":"..."}]}',
+      "Chunks:",
+      JSON.stringify(serializedChunks)
+    ].join("\n")
+  }];
+}
+var COMPRESSOR_RESPONSE_FORMAT = {
+  type: "json_object",
+  schema: {
+    type: "object",
+    properties: {
+      keep_ids: {
+        type: "array",
+        items: { type: "integer", minimum: 1 }
+      },
+      summaries: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "integer" },
+            text: { type: "string" }
+          },
+          required: ["id", "text"]
+        }
+      }
+    },
+    required: ["keep_ids"]
+  }
+};
+function mergeCompressedChunks(chunks, payload) {
+  const keepIds = new Set(payload.keep_ids);
+  const summaryById = new Map((payload.summaries ?? []).map((item) => [item.id, item.text.trim()]));
+  const parts = [];
+  for (const chunk of chunks) {
+    if (chunk.pinned || keepIds.has(chunk.id)) {
+      parts.push(chunk.text);
+      continue;
+    }
+    const summary = summaryById.get(chunk.id);
+    if (summary) {
+      parts.push(`[compressed summary #${chunk.id}] ${summary}`);
+    }
+  }
+  return parts.join("\n\n").trim();
+}
+async function compressPromptWithQwen(prompt, userMessage, modelTier, config) {
+  const started = Date.now();
+  const rawTokens = estimateTokens(prompt);
+  const queryTokens = estimateTokens(userMessage);
+  const budget = resolveCompressionBudget(modelTier, config?.budgetByTier);
+  const minPromptTokens = resolveNonNegativeInt(
+    config?.minPromptTokens ?? Number(process.env.KAI_COMPRESSOR_MIN_PROMPT_TOKENS || MIN_PROMPT_TOKENS),
+    MIN_PROMPT_TOKENS
+  );
+  const minQueryTokens = resolveNonNegativeInt(
+    config?.minQueryTokens ?? Number(process.env.KAI_COMPRESSOR_MIN_QUERY_TOKENS || 0),
+    0
+  );
+  if (config?.disabled || rawTokens < minPromptTokens || rawTokens <= budget || queryTokens < minQueryTokens) {
+    return {
+      prompt,
+      metrics: {
+        rawTokens,
+        compressedTokens: rawTokens,
+        cmpPct: 0,
+        durationMs: Date.now() - started,
+        usedModel: false
+      }
+    };
+  }
+  const chunks = splitPromptIntoChunks(prompt);
+  if (chunks.length === 0) {
+    throw new LocalCompressorUnavailableError("compression required but prompt has no compressible chunks");
+  }
+  const url = config?.url ?? process.env.KAI_COMPRESSOR_URL;
+  if (!url) {
+    throw new LocalCompressorUnavailableError("compression required but missing KAI_COMPRESSOR_URL");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config?.timeoutMs ?? Number(process.env.KAI_COMPRESSOR_TIMEOUT_MS || 1500));
+  try {
+    const response = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: config?.model ?? process.env.KAI_COMPRESSOR_MODEL ?? "LFM2-350M",
+        messages: compressorMessages(userMessage, chunks),
+        stream: false,
+        temperature: 0,
+        // Enough for ~200 integer ids + a few summaries; model stops at closing
+        // brace so unused tokens are free.
+        max_tokens: 1024,
+        response_format: COMPRESSOR_RESPONSE_FORMAT
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new LocalCompressorUnavailableError(`local compressor returned HTTP ${response.status}`);
+    }
+    const body = await response.json();
+    const content = body.choices?.[0]?.message?.content ?? "";
+    const parsed = parseCompressorPayload(content, chunks.length);
+    const merged = mergeCompressedChunks(chunks, parsed);
+    if (!merged.trim()) {
+      throw new LocalCompressorUnavailableError("local compressor returned empty merged prompt");
+    }
+    const compressedTokens = estimateTokens(merged);
+    return {
+      prompt: compressedTokens >= rawTokens ? prompt : merged,
+      metrics: {
+        rawTokens,
+        compressedTokens: compressedTokens >= rawTokens ? rawTokens : compressedTokens,
+        cmpPct: compressedTokens >= rawTokens ? 0 : Math.max(0, Math.round((1 - compressedTokens / rawTokens) * 100)),
+        durationMs: Date.now() - started,
+        usedModel: true
+      }
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// src/context-pack.ts
 var import_node_fs = require("node:fs");
+var import_node_path = require("node:path");
+function sanitizeSegment(input) {
+  return input.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+function createDynamicContextPack(input) {
+  const dirName = sanitizeSegment(input.runId);
+  const baseDir = (0, import_node_path.join)("/tmp", "kai-context", dirName);
+  (0, import_node_fs.mkdirSync)(baseDir, { recursive: true });
+  const taskPath = (0, import_node_path.join)(baseDir, "task.txt");
+  const prMetaPath = (0, import_node_path.join)(baseDir, "pr-meta.txt");
+  const changedFilesPath = (0, import_node_path.join)(baseDir, "changed-files.txt");
+  const commentsPath = (0, import_node_path.join)(baseDir, "comments.txt");
+  const architecturePath = (0, import_node_path.join)(baseDir, "architecture.txt");
+  const historyPath = (0, import_node_path.join)(baseDir, "history.jsonl");
+  const manifestPath = (0, import_node_path.join)(baseDir, "manifest.json");
+  (0, import_node_fs.writeFileSync)(taskPath, [
+    `Task from user: ${input.userMessage}`,
+    `Raw mention tail: ${input.rawMessage}`,
+    `Router decision: ${input.route.intent} -> ${input.route.decision}`,
+    `Reason: ${input.route.reason}`
+  ].join("\n"), "utf-8");
+  (0, import_node_fs.writeFileSync)(prMetaPath, [
+    `Repository: ${input.repoFullName}`,
+    `PR #${input.issueNumber}: ${input.prTitle}`,
+    `Description:`,
+    input.prBody || "(empty)"
+  ].join("\n"), "utf-8");
+  (0, import_node_fs.writeFileSync)(changedFilesPath, input.filesList || "(none)", "utf-8");
+  (0, import_node_fs.writeFileSync)(commentsPath, input.prCommentsContext || "(none)", "utf-8");
+  if (input.architectureContext) {
+    (0, import_node_fs.writeFileSync)(architecturePath, input.architectureContext, "utf-8");
+  }
+  const manifest = {
+    runId: input.runId,
+    owner: input.owner,
+    repo: input.repo,
+    issueNumber: input.issueNumber,
+    route: {
+      intent: input.route.intent,
+      decision: input.route.decision,
+      confidence: input.route.confidence,
+      source: input.route.source ?? "unknown"
+    },
+    files: {
+      task: taskPath,
+      prMeta: prMetaPath,
+      changedFiles: changedFilesPath,
+      comments: commentsPath,
+      architecture: input.architectureContext ? architecturePath : null,
+      history: historyPath
+    },
+    optimizationChain: "RTK + Qwen3 context compression"
+  };
+  (0, import_node_fs.writeFileSync)(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+  (0, import_node_fs.writeFileSync)(historyPath, `${JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), event: "context-pack-created" })}
+`, "utf-8");
+  return { baseDir, manifestPath, historyPath };
+}
+function appendContextHistory(historyPath, event, payload) {
+  (0, import_node_fs.appendFileSync)(historyPath, `${JSON.stringify({
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    event,
+    ...payload
+  })}
+`, "utf-8");
+}
+function buildDynamicPromptFromManifest(userMessage, repoFullName, route, manifestPath, isArchitectureTask) {
+  const core2 = [
+    `Kai, AI code reviewer. Service: repos/${repoFullName.split("/").pop()}.`,
+    `Task: ${userMessage}`,
+    `Router: intent=${route.intent}; decision=${route.decision}; confidence=${route.confidence}; contextBudget=${route.maxContextTokens}; commitExpected=${route.commitExpected}`,
+    `Dynamic context manifest: ${manifestPath}`,
+    "Optimization chain: RTK command rewrites + Qwen3 context compression.",
+    "Read only the necessary context files from manifest (start with task + changed-files + pr-meta)."
+  ];
+  if (isArchitectureTask) {
+    core2.push("For architecture requests, read the architecture context file from manifest and focus on system/service relations.");
+  } else {
+    core2.push("For code tasks, inspect changed files and git diff first; then fetch extra context lazily.");
+    core2.push("Ignore bot/infrastructure files unless explicitly requested (.github/, .claude/, CLAUDE.md, workflow yml).");
+  }
+  core2.push("Keep response concise markdown with concrete file references and avoid repeating prior analysis.");
+  return core2.join("\n");
+}
 
 // src/footer.ts
-function buildFooter(modelLabel, rtkSavings, inputTokens, outputTokens, costUsd, numTurns, durationSec, cacheReadTokens = 0) {
+function buildFooter(modelLabel, rtkSavings, cmpSavings, inputTokens, outputTokens, costUsd, numTurns, durationSec, cacheReadTokens = 0) {
   const inK = Math.round(inputTokens / 1e3);
   const outK = Math.round(outputTokens / 1e3);
   const cachePct = inputTokens > 0 ? Math.round(cacheReadTokens / inputTokens * 100) : 0;
   const cacheTag = cachePct > 0 ? ` \xB7 cache ${cachePct}%` : "";
-  return `Kai \xB7 ${modelLabel} \xB7 [RTK](https://github.com/rtk-ai/rtk) ${rtkSavings}${cacheTag} \xB7 ${inK}K in / ${outK}K out \xB7 $${costUsd.toFixed(4)} \xB7 ${numTurns}t \xB7 ${durationSec}s \xB7 deeper analysis: use sonnet / use opus`;
+  return `Kai \xB7 ${modelLabel} \xB7 [RTK](https://github.com/rtk-ai/rtk) ${rtkSavings} \xB7 CMP ${cmpSavings}${cacheTag} \xB7 ${inK}K in / ${outK}K out \xB7 $${costUsd.toFixed(4)} \xB7 ${numTurns}t \xB7 ${durationSec}s \xB7 deeper analysis: use sonnet / use opus`;
 }
 function buildRouterFooter(routerModel, durationSec) {
   return `Kai \xB7 local LLM (${routerModel}) \xB7 RTK 0% \xB7 cache 0% \xB7 0 in / 0 out \xB7 $0 \xB7 0t \xB7 ${durationSec}s \xB7 deeper analysis: unavailable`;
@@ -27727,12 +28050,89 @@ var LocalRouterUnavailableError = class extends Error {
     this.name = "LocalRouterUnavailableError";
   }
 };
+function extractJsonObject2(raw) {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const source = fenced ? fenced[1] : raw;
+  const start = source.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i];
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (ch === "\\") {
+      esc = true;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = !inStr;
+      continue;
+    }
+    if (inStr) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  return null;
+}
 function parseIntentOnly(raw) {
   try {
-    const parsed = JSON.parse(raw);
+    const candidate = extractJsonObject2(raw) ?? raw;
+    const parsed = JSON.parse(candidate);
     return ROUTER_INTENTS.includes(parsed.intent) ? parsed.intent : null;
   } catch {
     return null;
+  }
+}
+var TIER_VALUES = ["haiku", "sonnet", "opus"];
+var TIER_RESPONSE_FORMAT = {
+  type: "json_object",
+  schema: {
+    type: "object",
+    properties: { tier: { type: "string", enum: TIER_VALUES } },
+    required: ["tier"]
+  }
+};
+async function suggestTierWithLocalLLM(message, options) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 2e3);
+  try {
+    const res = await fetch(`${options.url.replace(/\/$/, "")}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: options.model ?? "LFM2-350M",
+        messages: [{
+          role: "user",
+          content: `Pick model tier for this task. haiku=simple Q/A, small edits. sonnet=multi-file refactor, code review, bug fix requiring reasoning. opus=architecture decisions, complex cross-service changes.
+Task: ${JSON.stringify(message)}
+Return {"tier":"haiku"} or {"tier":"sonnet"} or {"tier":"opus"}.`
+        }],
+        stream: false,
+        temperature: 0,
+        max_tokens: 20,
+        response_format: TIER_RESPONSE_FORMAT
+      }),
+      signal: controller.signal
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const content = body.choices?.[0]?.message?.content ?? "";
+    try {
+      const candidate = extractJsonObject2(content) ?? content;
+      const parsed = JSON.parse(candidate);
+      return TIER_VALUES.includes(parsed.tier) ? parsed.tier : null;
+    } catch {
+      return null;
+    }
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 function localRouterMessages(message) {
@@ -27744,7 +28144,19 @@ Return {"intent":"..."}.
 Comment: ${JSON.stringify(message)}`
   }];
 }
-var ROUTER_GRAMMAR = 'root ::= "{\\"intent\\":\\"" intent "\\"}"\nintent ::= "simple-answer" | "review" | "write-fix" | "commit-write" | "job-candidate" | "meta-template" | "spam-abuse" | "needs-input" | "stop" | "alert" | "unsupported" | "ignore"';
+var ROUTER_RESPONSE_FORMAT = {
+  type: "json_object",
+  schema: {
+    type: "object",
+    properties: {
+      intent: {
+        type: "string",
+        enum: ROUTER_INTENTS
+      }
+    },
+    required: ["intent"]
+  }
+};
 async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
   const rules = routeEvent(rawMessage, modelTier);
   if (rules.decision !== "call-model") return rules;
@@ -27761,12 +28173,12 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "FunctionGemma-270M",
+        model: options?.model ?? process.env.KAI_ROUTER_MODEL ?? "LFM2-350M",
         messages: localRouterMessages(rules.normalizedMessage),
         stream: false,
         temperature: 0,
-        max_tokens: 20,
-        grammar: ROUTER_GRAMMAR
+        max_tokens: 40,
+        response_format: ROUTER_RESPONSE_FORMAT
       }),
       signal: controller.signal
     });
@@ -27801,17 +28213,175 @@ async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
 }
 
 // src/templates.ts
-var META_TEMPLATE = `I'm Kai, the Kodif project assistant. My goal is to help with minimal token spend and provide a good experience for Kodif architecture questions. Response by local LLM (FunctionGemma-270M). Usage: write a comment with a task for @kai; for deeper analysis add \`use sonnet\` or \`use opus\`; loop mode (under development) is a sandbox where the agent will work with full permissions, autonomously commit and open PRs.`;
+var META_TEMPLATE = `I'm Kai, the Kodif project assistant. My goal is to help with minimal token spend and provide a good experience for Kodif architecture questions. Response by local LLM (LFM2-350M). Usage: write a comment with a task for @kai; for deeper analysis add \`use sonnet\` or \`use opus\`; loop mode (under development) is a sandbox where the agent will work with full permissions, autonomously commit and open PRs.`;
 var OFFTOPIC_TEMPLATE = `Kai only handles development work related to our platform: code review, bug fixes, tests, PRs, architecture, deployments, logs, metrics, and engineering tasks. Please ask a work-related development question or provide a specific repo/PR/task.`;
 function templateForRoute(route) {
   return route.intent === "spam-abuse" ? OFFTOPIC_TEMPLATE : META_TEMPLATE;
+}
+
+// src/cache.ts
+var import_node_crypto = require("node:crypto");
+function ensureCacheSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS response_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      prompt_hash TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      sender TEXT NOT NULL,
+      reply TEXT NOT NULL,
+      cost_usd REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_cache_hash ON response_cache(prompt_hash, repo, pr_number);
+    CREATE INDEX IF NOT EXISTS idx_cache_ts ON response_cache(created_at);
+  `);
+}
+function hashPrompt(prompt) {
+  return (0, import_node_crypto.createHash)("sha256").update(prompt).digest("hex").slice(0, 32);
+}
+function lookupCachedReply(db, prompt, repo, prNumber, ttlHours = 24) {
+  const hash = hashPrompt(prompt);
+  const hours = Math.max(1, Math.floor(ttlHours));
+  const row = db.prepare(
+    `SELECT reply, created_at FROM response_cache
+     WHERE prompt_hash = ? AND repo = ? AND pr_number = ?
+       AND created_at >= datetime('now', '-${hours} hours')
+     ORDER BY created_at DESC LIMIT 1`
+  ).get(hash, repo, prNumber);
+  return row ?? null;
+}
+function storeCachedReply(db, prompt, repo, prNumber, sender, reply, costUsd) {
+  const hash = hashPrompt(prompt);
+  db.prepare(
+    `INSERT INTO response_cache (prompt_hash, repo, pr_number, sender, reply, cost_usd)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(hash, repo, prNumber, sender, reply, costUsd);
+}
+
+// src/quality.ts
+function ensureQualitySchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS response_quality (
+      audit_id INTEGER PRIMARY KEY,
+      reactions_pos INTEGER DEFAULT 0,
+      reactions_neg INTEGER DEFAULT 0,
+      followup_15min INTEGER DEFAULT 0,
+      commit_verified INTEGER,
+      llm_grounded_score INTEGER,
+      cache_hit INTEGER DEFAULT 0,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_quality_updated ON response_quality(updated_at);
+  `);
+}
+function upsert(db, auditId, column, value) {
+  db.prepare(
+    `INSERT INTO response_quality (audit_id, ${column}) VALUES (?, ?)
+     ON CONFLICT(audit_id) DO UPDATE SET ${column} = excluded.${column}, updated_at = datetime('now')`
+  ).run(auditId, value);
+}
+function recordCommitVerification(db, auditId, verified) {
+  upsert(db, auditId, "commit_verified", verified ? 1 : 0);
+}
+function recordCacheHit(db, auditId) {
+  upsert(db, auditId, "cache_hit", 1);
+}
+function detectAndRecordFollowup(db, sender, repo, prNumber) {
+  const row = db.prepare(
+    `SELECT id FROM audit_log
+     WHERE sender = ? AND repo = ? AND pr_number = ?
+       AND status IN ('completed','completed-rtk-bypass','completed-cost-over-cap')
+       AND timestamp >= datetime('now', '-15 minutes')
+       AND timestamp < datetime('now', '-5 seconds')
+     ORDER BY timestamp DESC LIMIT 1`
+  ).get(sender, repo, prNumber);
+  if (!row?.id) return { previousAuditId: null };
+  upsert(db, row.id, "followup_15min", 1);
+  return { previousAuditId: row.id };
+}
+
+// src/file-focus.ts
+var FILE_FOCUS_RESPONSE_FORMAT = {
+  type: "json_object",
+  schema: {
+    type: "object",
+    properties: {
+      files: { type: "array", items: { type: "string" } }
+    },
+    required: ["files"]
+  }
+};
+async function selectRelevantFiles(userMessage, filesList, config) {
+  const maxFiles = config.maxFiles ?? 5;
+  const files = filesList.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
+  if (files.length <= maxFiles) return files;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? 2e3);
+  try {
+    const response = await fetch(`${config.url.replace(/\/$/, "")}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: config.model ?? "LFM2-350M",
+        messages: [{
+          role: "user",
+          content: `Pick up to ${maxFiles} most relevant file paths for this task.
+Task: ${JSON.stringify(userMessage)}
+Files:
+${files.join("\n")}
+Return {"files":["path","..."]} with exact paths from the list.`
+        }],
+        stream: false,
+        temperature: 0,
+        max_tokens: 256,
+        response_format: FILE_FOCUS_RESPONSE_FORMAT
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) return [];
+    const body = await response.json();
+    const content = body.choices?.[0]?.message?.content ?? "";
+    const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const jsonStart = (fenced ? fenced[1] : content).indexOf("{");
+    const rawJson = jsonStart >= 0 ? (fenced ? fenced[1] : content).slice(jsonStart) : content;
+    let parsed;
+    try {
+      parsed = JSON.parse(rawJson.trim());
+    } catch {
+      return [];
+    }
+    if (!parsed.files || !Array.isArray(parsed.files)) return [];
+    const known = new Set(files);
+    return parsed.files.filter((p) => typeof p === "string" && known.has(p)).slice(0, maxFiles);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// src/prompt-order.ts
+function buildCacheFriendlyPrompt(sections) {
+  const stable = sections.stable.map((s) => s.trim()).filter(Boolean);
+  const dynamic = sections.dynamic.map((s) => s.trim()).filter(Boolean);
+  const parts = [];
+  if (stable.length) {
+    parts.push("=== STABLE CONTEXT (cache prefix) ===");
+    parts.push(...stable);
+  }
+  if (dynamic.length) {
+    parts.push("=== TASK ===");
+    parts.push(...dynamic);
+  }
+  return parts.join("\n\n").trim();
 }
 
 // src/index.ts
 var AUDIT_DB_PATH = process.env.KAI_AUDIT_DB || "/home/kai/data/kai-audit.db";
 function initAuditDb() {
   try {
-    (0, import_node_fs.mkdirSync)("/home/kai/data", { recursive: true });
+    (0, import_node_fs2.mkdirSync)("/home/kai/data", { recursive: true });
   } catch {
   }
   const db = new import_node_sqlite.DatabaseSync(AUDIT_DB_PATH);
@@ -27863,9 +28433,132 @@ function initAuditDb() {
       estimated_tokens INTEGER NOT NULL,
       estimated_cost_usd REAL NOT NULL,
       reason TEXT
-    )
+    );
+    CREATE TABLE IF NOT EXISTS context_optimizer_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      repo TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      run_id TEXT NOT NULL,
+      model_tier TEXT NOT NULL,
+      raw_prompt_tokens INTEGER NOT NULL,
+      compressed_prompt_tokens INTEGER NOT NULL,
+      cmp_pct INTEGER NOT NULL,
+      used_model INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS model_allowlist (
+      sender TEXT PRIMARY KEY,
+      max_tier TEXT NOT NULL CHECK(max_tier IN ('haiku','sonnet','opus')),
+      added_at TEXT NOT NULL DEFAULT (datetime('now')),
+      added_by TEXT,
+      note TEXT
+    );
+    CREATE TABLE IF NOT EXISTS rate_limits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      sender TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      cost_usd REAL NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_rate_limits_sender_ts ON rate_limits(sender, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_rate_limits_repo_ts ON rate_limits(repo, timestamp)
   `);
+  seedModelAllowlist(db);
+  ensureCacheSchema(db);
+  ensureQualitySchema(db);
   return db;
+}
+function latestAuditId(db, sender, repoFull, prNumber) {
+  try {
+    const row = db.prepare(
+      `SELECT id FROM audit_log WHERE sender = ? AND repo = ? AND pr_number = ?
+       ORDER BY id DESC LIMIT 1`
+    ).get(sender, repoFull, prNumber);
+    return row?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+var RATE_LIMIT_SENDER_PER_HOUR = Number(process.env.KAI_RATE_LIMIT_SENDER_PER_HOUR || 20);
+var RATE_LIMIT_REPO_PER_HOUR = Number(process.env.KAI_RATE_LIMIT_REPO_PER_HOUR || 120);
+var RATE_LIMIT_SENDER_COST_PER_DAY = Number(process.env.KAI_RATE_LIMIT_SENDER_COST_PER_DAY || 20);
+function checkRateLimit(db, sender, repoFull) {
+  if (!db) return { allowed: true };
+  try {
+    const hourly = db.prepare(
+      `SELECT COUNT(*) AS n FROM rate_limits WHERE sender = ? AND timestamp >= datetime('now', '-1 hour')`
+    ).get(sender);
+    if (hourly.n >= RATE_LIMIT_SENDER_PER_HOUR) {
+      return { allowed: false, reason: `sender rate limit: ${hourly.n}/${RATE_LIMIT_SENDER_PER_HOUR} calls in last hour` };
+    }
+    const repoHourly = db.prepare(
+      `SELECT COUNT(*) AS n FROM rate_limits WHERE repo = ? AND timestamp >= datetime('now', '-1 hour')`
+    ).get(repoFull);
+    if (repoHourly.n >= RATE_LIMIT_REPO_PER_HOUR) {
+      return { allowed: false, reason: `repo rate limit: ${repoHourly.n}/${RATE_LIMIT_REPO_PER_HOUR} calls in last hour` };
+    }
+    const dailyCost = db.prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS c FROM rate_limits WHERE sender = ? AND timestamp >= datetime('now', '-1 day')`
+    ).get(sender);
+    if (dailyCost.c >= RATE_LIMIT_SENDER_COST_PER_DAY) {
+      return { allowed: false, reason: `sender daily budget: $${dailyCost.c.toFixed(2)}/$${RATE_LIMIT_SENDER_COST_PER_DAY}` };
+    }
+    return { allowed: true };
+  } catch (e) {
+    core.warning(`Rate-limit check failed: ${e}`);
+    return { allowed: true };
+  }
+}
+function recordRateLimit(db, sender, repoFull, tier, costUsd) {
+  if (!db) return;
+  try {
+    db.prepare(`INSERT INTO rate_limits (sender, repo, tier, cost_usd) VALUES (?, ?, ?, ?)`).run(sender, repoFull, tier, costUsd);
+  } catch (e) {
+    core.warning(`Rate-limit record failed: ${e}`);
+  }
+}
+function seedModelAllowlist(db) {
+  const raw = process.env.KAI_MODEL_ALLOWLIST?.trim();
+  if (!raw) return;
+  const stmt = db.prepare(
+    `INSERT OR REPLACE INTO model_allowlist (sender, max_tier, added_by, note)
+     VALUES (?, ?, 'env-seed', 'seeded from KAI_MODEL_ALLOWLIST')`
+  );
+  for (const entry of raw.split(",")) {
+    const [senderRaw, tierRaw] = entry.split(":").map((s) => s?.trim());
+    if (!senderRaw || !tierRaw) continue;
+    const tier = tierRaw.toLowerCase();
+    if (tier !== "haiku" && tier !== "sonnet" && tier !== "opus") continue;
+    try {
+      stmt.run(senderRaw, tier);
+    } catch (e) {
+      core.warning(`Allowlist seed failed for ${senderRaw}: ${e}`);
+    }
+  }
+}
+var TIER_RANK = { haiku: 1, sonnet: 2, opus: 3 };
+function defaultAllowedTier() {
+  const env = (process.env.KAI_ALLOWLIST_DEFAULT_TIER || "haiku").toLowerCase();
+  return TIER_RANK[env] ? env : "haiku";
+}
+function resolveAllowedModel(db, sender, requestedTier) {
+  const fallbackTier = defaultAllowedTier();
+  const requested = requestedTier.toLowerCase();
+  if (!db) {
+    const allowed2 = TIER_RANK[requested] <= TIER_RANK[fallbackTier] ? requested : fallbackTier;
+    return { tier: allowed2, downgraded: allowed2 !== requested, maxTier: fallbackTier };
+  }
+  let maxTier = fallbackTier;
+  try {
+    const row = db.prepare(`SELECT max_tier FROM model_allowlist WHERE sender = ?`).get(sender);
+    if (row?.max_tier && TIER_RANK[row.max_tier]) maxTier = row.max_tier;
+  } catch (e) {
+    core.warning(`Allowlist lookup failed for ${sender}: ${e}`);
+  }
+  const allowed = TIER_RANK[requested] <= TIER_RANK[maxTier] ? requested : maxTier;
+  return { tier: allowed, downgraded: allowed !== requested, maxTier };
 }
 function sessionStart(db, data) {
   try {
@@ -27956,6 +28649,26 @@ function logRouterDecision(db, data) {
     core.warning(`Router decision log failed: ${e}`);
   }
 }
+function logContextOptimization(db, data) {
+  try {
+    db.prepare(`
+      INSERT INTO context_optimizer_log (repo, pr_number, run_id, model_tier, raw_prompt_tokens, compressed_prompt_tokens, cmp_pct, used_model, duration_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      data.repo,
+      data.prNumber,
+      data.runId,
+      data.modelTier,
+      data.rawPromptTokens,
+      data.compressedPromptTokens,
+      data.cmpPct,
+      data.usedModel ? 1 : 0,
+      data.durationMs
+    );
+  } catch (e) {
+    core.warning(`Context optimization log failed: ${e}`);
+  }
+}
 async function getPRCommentsContext(octokit, owner, repo, issueNumber, maxComments = 5, maxChars = 200) {
   try {
     const { data: comments } = await octokit.issues.listComments({
@@ -28004,13 +28717,40 @@ function requireRTK() {
     if (!help.includes("rewrite")) {
       throw new Error("Wrong rtk binary (missing 'rewrite' command). Need rtk-ai/rtk, not crates.io rtk.");
     }
+    requireRTKHookConfigured();
     core.info(`RTK verified: ${ver}`);
     return ver;
   } catch (e) {
-    if (e instanceof Error && e.message.includes("Wrong rtk")) throw e;
+    if (e instanceof Error && (e.message.includes("Wrong rtk") || e.message.includes("RTK hook"))) throw e;
     const msg = e instanceof Error ? e.message.slice(0, 200) : String(e);
     throw new Error(`RTK is required but not available: ${msg}`);
   }
+}
+function requireRTKHookConfigured() {
+  if (process.env.KAI_RTK_HOOK_SKIP_CHECK === "true") {
+    core.warning("KAI_RTK_HOOK_SKIP_CHECK=true \u2014 skipping RTK hook verification (RTK may be bypassed)");
+    return;
+  }
+  const candidates = [
+    process.env.KAI_CLAUDE_SETTINGS_PATH,
+    `${process.env.HOME || "/home/kai"}/.claude/settings.json`,
+    "/home/kai/.claude/settings.json",
+    "/root/.claude/settings.json"
+  ].filter((p) => !!p);
+  for (const path of candidates) {
+    try {
+      if (!(0, import_node_fs2.existsSync)(path)) continue;
+      const content = (0, import_node_fs2.readFileSync)(path, "utf-8");
+      if (/\brtk\b/i.test(content)) {
+        core.info(`RTK hook found in ${path}`);
+        return;
+      }
+    } catch {
+    }
+  }
+  throw new Error(
+    "RTK hook not configured in Claude settings.json \u2014 RTK would be bypassed silently. Configure PreToolUse hook with rtk, or set KAI_RTK_HOOK_SKIP_CHECK=true to override."
+  );
 }
 var KODIF_ARCH_CONTEXT = `
 Kodif platform: 33+ microservices. Architecture repo: kodif-team/architect
@@ -28026,6 +28766,13 @@ function isArchitectureQuestion(msg) {
 function shellQuote(value) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
+function logErrorToSentry(error2, extra) {
+  const sentry = globalThis.Sentry;
+  try {
+    sentry?.captureException?.(error2, extra);
+  } catch {
+  }
+}
 function gitOutput(command) {
   return (0, import_node_child_process.execSync)(command, { stdio: "pipe", timeout: 3e4, encoding: "utf-8" }).trim();
 }
@@ -28037,9 +28784,14 @@ function stripProviderCoAuthorFromHead() {
     (0, import_node_child_process.execSync)(`git commit --amend -m ${shellQuote(cleaned)}`, { stdio: "pipe", timeout: 3e4 });
   }
 }
-function commitVerificationNote(userMessage, beforeHead, branch) {
+function gitAuthFlag(githubToken) {
+  const authHeader = `Authorization: Basic ${Buffer.from(`x-access-token:${githubToken}`).toString("base64")}`;
+  return `-c ${shellQuote(`http.https://github.com/.extraheader=${authHeader}`)}`;
+}
+function commitVerificationNote(userMessage, beforeHead, branch, githubToken) {
   if (!shouldVerifyCommit(userMessage) || !beforeHead || !branch) return "";
   const quotedBranch = shellQuote(branch);
+  const auth2 = gitAuthFlag(githubToken);
   try {
     (0, import_node_child_process.execSync)("git reset -- .claudeignore && rm -f .claudeignore", { stdio: "pipe", timeout: 5e3 });
   } catch {
@@ -28049,7 +28801,7 @@ function commitVerificationNote(userMessage, beforeHead, branch) {
     stripProviderCoAuthorFromHead();
     const amendedHead = gitOutput("git rev-parse HEAD");
     core.info(`Commit requested \u2014 pushing existing commit ${amendedHead.slice(0, 7)} to ${branch}`);
-    (0, import_node_child_process.execSync)(`git push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 6e4 });
+    (0, import_node_child_process.execSync)(`git ${auth2} push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 6e4 });
     return `
 
 **Commit verification:** pushed \`${amendedHead.slice(0, 7)}\` to \`${branch}\`.`;
@@ -28068,7 +28820,7 @@ function commitVerificationNote(userMessage, beforeHead, branch) {
     stripProviderCoAuthorFromHead();
     const amendedHead = gitOutput("git rev-parse HEAD");
     core.info(`Commit requested \u2014 pushing ${amendedHead.slice(0, 7)} to ${branch}`);
-    (0, import_node_child_process.execSync)(`git push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 6e4 });
+    (0, import_node_child_process.execSync)(`git ${auth2} push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 6e4 });
     return `
 
 **Commit verification:** pushed \`${amendedHead.slice(0, 7)}\` to \`${branch}\`.`;
@@ -28078,42 +28830,41 @@ function commitVerificationNote(userMessage, beforeHead, branch) {
 
 **Commit verification failed:** no file changes or new commit were found after the requested work. Nothing was pushed.`;
 }
-function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, repoFullName, route) {
-  const parts = [
-    `Kai, AI code reviewer. Service: repos/${repoFullName.split("/").pop()}. PR: "${prTitle}"`,
-    `Router: intent=${route.intent}; confidence=${route.confidence}; contextBudget=${route.maxContextTokens}; commitExpected=${route.commitExpected}`,
-    prBody ? `Desc: ${prBody.slice(0, 300)}` : "",
-    `Files:
-${filesList}`
+function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, repoFullName, route, focusedFiles = []) {
+  if (isMetaQuestion(userMessage)) return META_TEMPLATE;
+  const archTask = isArchitectureQuestion(userMessage);
+  const stable = [
+    `Kai, AI code reviewer. Service: repos/${repoFullName.split("/").pop()}. PR: "${prTitle}"`
   ];
-  if (prCommentsContext) {
-    parts.push(`Prior conversation:
-${prCommentsContext}`);
-  }
-  if (isMetaQuestion(userMessage)) {
-    return META_TEMPLATE;
-  }
-  if (isArchitectureQuestion(userMessage)) {
-    parts.push(
-      `IMPORTANT: Answer about Kodif platform architecture, NOT about the PR code:`,
-      KODIF_ARCH_CONTEXT,
-      `Task: ${userMessage}`,
-      `Rules: concise, markdown, max 50 lines. Focus on architecture, services, connections.`
-    );
+  if (prBody) stable.push(`Desc: ${prBody.slice(0, 300)}`);
+  stable.push(`Files:
+${filesList}`);
+  if (archTask) {
+    stable.push(`Kodif architecture context:
+${KODIF_ARCH_CONTEXT}`);
   } else {
-    parts.push(
+    stable.push(
       `PR repo checked out in current dir. Use git diff origin/main...HEAD and Read to inspect PROJECT code only.`,
       `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context.`,
       `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files \u2014 these are bot infrastructure, not project code.`,
-      `Task: ${userMessage}`,
-      `Success criteria: satisfy the task, stay within the selected context, and report concrete evidence.`,
-      `IMPORTANT: Answer EXACTLY what the user asked. Do NOT default to security review unless explicitly asked.`,
       `Rules: concise, markdown, repos/<service>/path/file.py:line refs, max 50 lines. Don't repeat prior analysis.`,
       `For imperative write tasks (fix/add/update/create/patch/refactor/document), commit and push the change to the PR branch unless the user explicitly asks not to.`,
       `Git commits: NEVER add Co-Authored-By headers or AI provider attribution. Author is already set to kodif-ai[bot].`
     );
   }
-  return parts.filter(Boolean).join("\n");
+  const dynamic = [
+    `Router: intent=${route.intent}; confidence=${route.confidence}; contextBudget=${route.maxContextTokens}; commitExpected=${route.commitExpected}`
+  ];
+  if (focusedFiles.length) {
+    dynamic.push(`Priority files (local LLM pre-selected): ${focusedFiles.join(", ")}`);
+  }
+  if (prCommentsContext) dynamic.push(`Prior conversation:
+${prCommentsContext}`);
+  dynamic.push(
+    `Task: ${userMessage}`,
+    archTask ? `Rules: concise, markdown, max 50 lines. Focus on architecture, services, connections.` : `Success criteria: satisfy the task, stay within the selected context, and report concrete evidence. Answer EXACTLY what the user asked.`
+  );
+  return buildCacheFriendlyPrompt({ stable, dynamic });
 }
 function getMaxTurns(message, modelTier) {
   if (modelTier === "opus") return 25;
@@ -28125,8 +28876,18 @@ function getMaxTurns(message, modelTier) {
 }
 var HEARTBEAT_INTERVAL_MS = 15e3;
 var CLI_TIMEOUT_MS = 3e5;
-var MAX_CLI_RETRIES = 3;
 var RETRY_DELAYS = [15e3, 3e4, 6e4];
+function maxRetriesFor(tier) {
+  if (tier === "opus") return 1;
+  if (tier === "sonnet") return 2;
+  return Number(process.env.KAI_MAX_CLI_RETRIES || 3);
+}
+var MAX_COST_USD_BY_TIER = {
+  haiku: Number(process.env.KAI_MAX_COST_USD_HAIKU || 0.5),
+  sonnet: Number(process.env.KAI_MAX_COST_USD_SONNET || 2),
+  opus: Number(process.env.KAI_MAX_COST_USD_OPUS || 5)
+};
+var MAX_PROMPT_TOKENS = Number(process.env.KAI_MAX_PROMPT_TOKENS || 5e4);
 var LOADING_GIF = "https://emojis.slackmojis.com/emojis/images/1643514453/4358/loading.gif?1643514453";
 var PHASES = [
   "Reading PR context",
@@ -28142,19 +28903,20 @@ function spinnerFrame(_tick, elapsed, _modelLabel) {
 
 _Delete this comment to cancel._`;
 }
-async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, heartbeat, db, runId) {
+async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, heartbeat, db, runId, modelTier) {
   const isRoot = process.getuid?.() === 0;
-  for (let attempt = 1; attempt <= MAX_CLI_RETRIES; attempt++) {
+  const maxRetries = maxRetriesFor(modelTier);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     sessionUpdate(db, runId, `cli-attempt-${attempt}`, { attempt });
     if (attempt > 1) {
       const delay = RETRY_DELAYS[attempt - 2] ?? 6e4;
-      core.info(`Retry ${attempt}/${MAX_CLI_RETRIES} in ${delay / 1e3}s`);
+      core.info(`Retry ${attempt}/${maxRetries} in ${delay / 1e3}s`);
       await safeUpdate(
         heartbeat.octokit,
         heartbeat.owner,
         heartbeat.repo,
         heartbeat.replyCommentId,
-        `> \u26A0\uFE0F Retrying (attempt ${attempt}/${MAX_CLI_RETRIES})...
+        `> \u26A0\uFE0F Retrying (attempt ${attempt}/${maxRetries})...
 
 \u{1F504} Previous attempt failed, waiting ${delay / 1e3}s before retry
 \u{1F50D} **${heartbeat.modelLabel}**
@@ -28171,7 +28933,7 @@ _Delete this comment to cancel._`
       const msg = e instanceof Error ? e.message.slice(0, 200) : String(e);
       core.warning(`CLI attempt ${attempt} failed: ${msg}`);
       sessionUpdate(db, runId, `failed-attempt-${attempt}`, { error: msg });
-      if (attempt === MAX_CLI_RETRIES) {
+      if (attempt === maxRetries) {
         sessionUpdate(db, runId, "failed", { status: "failed", error: msg });
         throw e;
       }
@@ -28286,7 +29048,12 @@ async function run() {
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");
     const routerUrl = core.getInput("router_url") || process.env.KAI_ROUTER_URL;
-    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "FunctionGemma-270M";
+    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "LFM2-350M";
+    const compressorUrl = core.getInput("compressor_url") || process.env.KAI_COMPRESSOR_URL;
+    const compressorModel = core.getInput("compressor_model") || process.env.KAI_COMPRESSOR_MODEL || "LFM2-350M";
+    const compressorDisabled = (core.getInput("compressor_disable") || process.env.KAI_COMPRESSOR_DISABLE || "false").toLowerCase() === "true";
+    const compressorMinQueryTokens = Number(core.getInput("compressor_min_query_tokens") || process.env.KAI_COMPRESSOR_MIN_QUERY_TOKENS || 10);
+    const compressorMinPromptTokens = Number(core.getInput("compressor_min_prompt_tokens") || process.env.KAI_COMPRESSOR_MIN_PROMPT_TOKENS || 2200);
     const { context: context2 } = github;
     const event = context2.eventName;
     let commentBody = "", commentId = 0, issueNumber = 0;
@@ -28301,10 +29068,33 @@ async function run() {
     if (sender.includes("[bot]")) return;
     octokit = new Octokit2({ auth: githubToken });
     ({ owner, repo } = context2.repo);
+    const auditDb = initAuditDb();
     const idx = commentBody.toLowerCase().indexOf(trigger.toLowerCase());
     rawMessage = commentBody.slice(idx + trigger.length).trim();
-    const { model: modelTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
+    const { model: parsedTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
+    const userSpecifiedTier = /\buse\s+(haiku|sonnet|opus)\b/i.test(rawMessage);
+    let suggestedTier = null;
+    if (!userSpecifiedTier && routerUrl) {
+      try {
+        suggestedTier = await suggestTierWithLocalLLM(userMessage, {
+          url: routerUrl,
+          model: routerModel,
+          timeoutMs: 2500
+        });
+        if (suggestedTier) core.info(`Local-LLM tier suggestion: ${suggestedTier} (task: "${userMessage.slice(0, 40)}")`);
+      } catch (e) {
+        core.warning(`Tier suggest failed: ${e}`);
+      }
+    }
+    const requestedTier = suggestedTier ?? parsedTier;
+    const { tier: modelTier, downgraded: tierDowngraded, maxTier: senderMaxTier } = resolveAllowedModel(auditDb, sender, requestedTier);
     const selectedModel = MODELS[modelTier];
+    const tierNotice = tierDowngraded ? `
+
+> _Note: @${sender} is allowed up to **${senderMaxTier}**. Requested **${requestedTier}** was downgraded to **${modelTier}**. Ask an admin to update the allowlist._` : "";
+    if (tierDowngraded) {
+      core.warning(`Tier downgrade for @${sender}: ${requestedTier} -> ${modelTier} (max=${senderMaxTier})`);
+    }
     const route = await routeEventWithLocalLLM(userMessage, modelTier, {
       url: routerUrl,
       model: routerModel,
@@ -28312,7 +29102,6 @@ async function run() {
     });
     core.info(`Triggered by @${sender} in #${issueNumber}`);
     core.info(`Router: ${route.intent} -> ${route.decision} (${route.reason}, confidence ${route.confidence})`);
-    const auditDb = initAuditDb();
     const runId = `${owner}/${repo}#${issueNumber}-${Date.now()}`;
     const startTime = Date.now();
     logRouterDecision(auditDb, {
@@ -28346,6 +29135,12 @@ async function run() {
     try {
       await octokit.reactions.createForIssueComment({ owner, repo, comment_id: commentId, content: "eyes" });
     } catch {
+    }
+    try {
+      const { previousAuditId } = detectAndRecordFollowup(auditDb, sender, `${owner}/${repo}`, issueNumber);
+      if (previousAuditId) core.info(`Follow-up detected; flagged audit #${previousAuditId}`);
+    } catch (e) {
+      core.warning(`Follow-up detection failed: ${e}`);
     }
     auditLog(auditDb, {
       sender,
@@ -28413,6 +29208,38 @@ ${template}
       core.info(`Template reply by local router (${routerModel})`);
       return;
     }
+    const rateLimit = checkRateLimit(auditDb, sender, `${owner}/${repo}`);
+    if (!rateLimit.allowed) {
+      const durationSec = Math.round((Date.now() - startTime) / 1e3);
+      const footer2 = buildRouterFooter(routerModel, durationSec);
+      const { data: rlReply } = await octokit.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body: `> @${sender}: ${rawMessage}
+
+\u26D4 Rate limit hit: ${rateLimit.reason}. Try again later.
+
+---
+<sub>${footer2}</sub>`
+      });
+      sessionUpdate(auditDb, runId, "completed", { status: "rate-limited", replyCommentId: rlReply.id });
+      auditLog(auditDb, {
+        sender,
+        repo: `${owner}/${repo}`,
+        prNumber: issueNumber,
+        model: routerModel,
+        message: rawMessage,
+        durationMs: Date.now() - startTime,
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        status: "rate-limited",
+        error: rateLimit.reason
+      });
+      core.warning(`Rate-limited @${sender}: ${rateLimit.reason}`);
+      return;
+    }
     requireClaudeCLI();
     const rtkVersion = requireRTK();
     const modeLabel = "CLI + RTK";
@@ -28427,6 +29254,8 @@ ${template}
     sessionUpdate(auditDb, runId, "analyzing", { replyCommentId });
     let prTitle = "", prBody = "", filesList = "", prCommentsContext = "";
     let prHeadRef = "", beforeHead = "";
+    let contextManifestPath = "";
+    let contextHistoryPath = "";
     try {
       await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(1, 2, selectedModel.label));
       sessionUpdate(auditDb, runId, "analyzing");
@@ -28439,11 +29268,12 @@ ${template}
           stdio: "pipe",
           timeout: 5e3
         });
-        (0, import_node_child_process.execSync)(`git remote set-url origin https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git`, {
+        (0, import_node_child_process.execSync)(`git remote set-url origin https://github.com/${owner}/${repo}.git`, {
           stdio: "pipe",
           timeout: 5e3
         });
-        (0, import_node_child_process.execSync)(`git fetch origin ${shellQuote(pr.head.ref)} && git checkout ${shellQuote(pr.head.ref)}`, {
+        const auth2 = gitAuthFlag(githubToken);
+        (0, import_node_child_process.execSync)(`git ${auth2} fetch origin ${shellQuote(pr.head.ref)} && git checkout ${shellQuote(pr.head.ref)}`, {
           stdio: "pipe",
           timeout: 3e4,
           encoding: "utf-8"
@@ -28461,6 +29291,38 @@ ${template}
       sessionUpdate(auditDb, runId, "context-loaded");
     } catch (e) {
       core.warning(`PR context error: ${e instanceof Error ? e.message : e}`);
+    }
+    try {
+      const contextPack = createDynamicContextPack({
+        runId,
+        owner,
+        repo,
+        issueNumber,
+        userMessage,
+        rawMessage,
+        route,
+        prTitle,
+        prBody,
+        filesList,
+        prCommentsContext,
+        repoFullName: `${owner}/${repo}`,
+        architectureContext: isArchitectureQuestion(userMessage) ? KODIF_ARCH_CONTEXT : void 0
+      });
+      contextManifestPath = contextPack.manifestPath;
+      contextHistoryPath = contextPack.historyPath;
+      appendContextHistory(contextHistoryPath, "routing", {
+        intent: route.intent,
+        decision: route.decision,
+        source: route.source ?? "unknown"
+      });
+    } catch (e) {
+      core.warning(`Context pack build failed: ${e instanceof Error ? e.message : String(e)}`);
+      logErrorToSentry(e, {
+        subsystem: "dynamic-context-pack",
+        owner,
+        repo,
+        issueNumber
+      });
     }
     let result = "";
     let footer = "";
@@ -28484,7 +29346,130 @@ CLAUDE.md
         });
       } catch {
       }
-      const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route);
+      let focusedFiles = [];
+      if (compressorUrl && filesList && !isArchitectureQuestion(userMessage)) {
+        try {
+          focusedFiles = await selectRelevantFiles(userMessage, filesList, {
+            url: compressorUrl,
+            model: compressorModel,
+            timeoutMs: 2500,
+            maxFiles: 5
+          });
+          if (focusedFiles.length) core.info(`File focus: ${focusedFiles.join(", ")}`);
+        } catch (e) {
+          core.warning(`File focus failed: ${e}`);
+        }
+      }
+      const prompt = contextManifestPath ? buildDynamicPromptFromManifest(
+        userMessage,
+        `${owner}/${repo}`,
+        route,
+        contextManifestPath,
+        isArchitectureQuestion(userMessage)
+      ) : buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route, focusedFiles);
+      const cached = lookupCachedReply(auditDb, prompt, `${owner}/${repo}`, issueNumber);
+      if (cached) {
+        const aid = latestAuditId(auditDb, sender, `${owner}/${repo}`, issueNumber);
+        if (aid != null) recordCacheHit(auditDb, aid);
+        const durationSec2 = Math.round((Date.now() - startTime) / 1e3);
+        const cacheFooter = `Kai \xB7 cache hit \xB7 0K in / 0K out \xB7 $0.0000 \xB7 0t \xB7 ${durationSec2}s \xB7 deeper analysis: use sonnet / use opus`;
+        await safeUpdate(
+          octokit,
+          owner,
+          repo,
+          replyCommentId,
+          `> @${sender}: ${rawMessage}${tierNotice}
+
+\u267B\uFE0F **Cached reply** (${cached.created_at}, same prompt within 24h):
+
+${cached.reply}
+
+---
+<sub>${cacheFooter}</sub>`
+        );
+        sessionUpdate(auditDb, runId, "completed", { status: "completed-cached" });
+        auditLog(auditDb, {
+          sender,
+          repo: `${owner}/${repo}`,
+          prNumber: issueNumber,
+          model: selectedModel.label,
+          message: rawMessage,
+          durationMs: Date.now() - startTime,
+          costUsd: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+          rtkSavings: "100%",
+          status: "completed-cached"
+        });
+        return;
+      }
+      if (contextHistoryPath) {
+        appendContextHistory(contextHistoryPath, "prompt-built", {
+          promptTokens: estimateTokens(prompt),
+          dynamicManifest: contextManifestPath || null
+        });
+      }
+      let finalPrompt = prompt;
+      let cmpSavings = "0%";
+      try {
+        const compressed = await compressPromptWithQwen(prompt, userMessage, modelTier, {
+          url: compressorUrl,
+          model: compressorModel,
+          timeoutMs: Number(process.env.KAI_COMPRESSOR_TIMEOUT_MS || 1500),
+          disabled: compressorDisabled,
+          minQueryTokens: compressorMinQueryTokens,
+          minPromptTokens: compressorMinPromptTokens,
+          budgetByTier: {
+            haiku: Number(process.env.KAI_COMPRESSOR_BUDGET_HAIKU || 6e3),
+            sonnet: Number(process.env.KAI_COMPRESSOR_BUDGET_SONNET || 24e3),
+            opus: Number(process.env.KAI_COMPRESSOR_BUDGET_OPUS || 8e4)
+          }
+        });
+        finalPrompt = compressed.prompt;
+        cmpSavings = `${compressed.metrics.cmpPct}%`;
+        core.info(`Context compression: ${compressed.metrics.rawTokens} -> ${compressed.metrics.compressedTokens} tokens (${cmpSavings}, model=${compressed.metrics.usedModel})`);
+        logContextOptimization(auditDb, {
+          repo: `${owner}/${repo}`,
+          prNumber: issueNumber,
+          runId,
+          modelTier,
+          rawPromptTokens: compressed.metrics.rawTokens,
+          compressedPromptTokens: compressed.metrics.compressedTokens,
+          cmpPct: compressed.metrics.cmpPct,
+          usedModel: compressed.metrics.usedModel,
+          durationMs: compressed.metrics.durationMs
+        });
+        if (contextHistoryPath) {
+          appendContextHistory(contextHistoryPath, "compression", {
+            cmpPct: compressed.metrics.cmpPct,
+            rawTokens: compressed.metrics.rawTokens,
+            compressedTokens: compressed.metrics.compressedTokens,
+            usedModel: compressed.metrics.usedModel
+          });
+        }
+      } catch (compressionError) {
+        const compressionErrorMessage = compressionError instanceof Error ? compressionError.message : String(compressionError);
+        core.error(`Context compression failed: ${compressionErrorMessage}`);
+        if (contextHistoryPath) {
+          appendContextHistory(contextHistoryPath, "compression-failed", {
+            reason: compressionErrorMessage
+          });
+        }
+        logErrorToSentry(compressionError, {
+          subsystem: "context-compressor",
+          owner,
+          repo,
+          issueNumber,
+          modelTier
+        });
+        throw compressionError;
+      }
+      const finalPromptTokens = estimateTokens(finalPrompt);
+      if (finalPromptTokens > MAX_PROMPT_TOKENS) {
+        throw new Error(
+          `Final prompt ${finalPromptTokens} tokens exceeds KAI_MAX_PROMPT_TOKENS=${MAX_PROMPT_TOKENS}. Compression may be disabled or ineffective. Refusing to call paid model.`
+        );
+      }
       const maxTurns = getMaxTurns(userMessage, modelTier);
       core.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);
       const heartbeatCtx = {
@@ -28498,31 +29483,51 @@ CLAUDE.md
       const r = await callClaudeCLIWithHeartbeat(
         anthropicApiKey,
         selectedModel.id,
-        prompt,
+        finalPrompt,
         maxTurns,
         heartbeatCtx,
         auditDb,
-        runId
+        runId,
+        modelTier
       );
       result = r.text;
+      let commitVerifiedOutcome = null;
       try {
-        result += commitVerificationNote(userMessage, beforeHead, prHeadRef);
+        const note = commitVerificationNote(userMessage, beforeHead, prHeadRef, githubToken);
+        result += note;
+        if (shouldVerifyCommit(userMessage)) {
+          commitVerifiedOutcome = note.includes("Commit verification:") && !note.includes("failed");
+        }
       } catch (e) {
         const verifyError = e instanceof Error ? e.message.slice(0, 500) : String(e);
         core.error(`Commit verification failed: ${verifyError}`);
         result += `
 
 **Commit verification failed:** ${verifyError}`;
+        commitVerifiedOutcome = false;
       }
       const durationMs = Date.now() - startTime;
       const rtkPct = r.rtkSavings || "\u2014 %";
-      if (!r.rtkSavings || r.rtkSavings === "0.0%") {
-        core.error(`CRITICAL: RTK savings empty or zero \u2014 tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
+      const rtkBypassed = !r.rtkSavings || r.rtkSavings === "0.0%";
+      if (rtkBypassed) {
+        core.error(`CRITICAL: RTK savings empty or zero \u2014 RTK was bypassed or tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
+        result += `
+
+> \u26A0\uFE0F **RTK bypassed** \u2014 no token savings recorded for this call. Operator: verify hook in \`$HOME/.claude/settings.json\`.`;
+      }
+      const costCap = MAX_COST_USD_BY_TIER[modelTier] ?? MAX_COST_USD_BY_TIER.haiku;
+      const costOverCap = r.costUsd > costCap;
+      if (costOverCap) {
+        core.error(`Cost cap exceeded: $${r.costUsd.toFixed(4)} > $${costCap} (${modelTier})`);
+        result += `
+
+> \u26A0\uFE0F **Cost cap exceeded** for ${modelTier}: $${r.costUsd.toFixed(4)} > $${costCap}. Operator alerted.`;
       }
       const durationSec = Math.round(durationMs / 1e3);
       footer = buildFooter(
         selectedModel.label,
         rtkPct,
+        cmpSavings,
         r.inputTokens,
         r.outputTokens,
         r.costUsd,
@@ -28530,6 +29535,7 @@ CLAUDE.md
         durationSec,
         r.cacheReadTokens
       );
+      const finalStatus = costOverCap ? "completed-cost-over-cap" : rtkBypassed ? "completed-rtk-bypass" : "completed";
       auditLog(auditDb, {
         sender,
         repo: `${owner}/${repo}`,
@@ -28541,8 +29547,24 @@ CLAUDE.md
         tokensIn: r.inputTokens,
         tokensOut: r.outputTokens,
         rtkSavings: rtkPct,
-        status: "completed"
+        status: finalStatus
       });
+      recordRateLimit(auditDb, sender, `${owner}/${repo}`, modelTier, r.costUsd);
+      const newAuditId = latestAuditId(auditDb, sender, `${owner}/${repo}`, issueNumber);
+      if (newAuditId != null && commitVerifiedOutcome !== null) {
+        try {
+          recordCommitVerification(auditDb, newAuditId, commitVerifiedOutcome);
+        } catch (e) {
+          core.warning(`Quality link failed: ${e}`);
+        }
+      }
+      if (!costOverCap && !rtkBypassed && result.trim()) {
+        try {
+          storeCachedReply(auditDb, finalPrompt, `${owner}/${repo}`, issueNumber, sender, result, r.costUsd);
+        } catch (e) {
+          core.warning(`Cache store failed: ${e}`);
+        }
+      }
     }
     if (!await commentExists(octokit, owner, repo, replyCommentId)) {
       core.info("Cancelled");
@@ -28554,7 +29576,7 @@ CLAUDE.md
       owner,
       repo,
       replyCommentId,
-      `> @${sender}: ${rawMessage}
+      `> @${sender}: ${rawMessage}${tierNotice}
 
 ${result}
 
@@ -28566,6 +29588,12 @@ ${result}
   } catch (error2) {
     const msg = error2 instanceof Error ? error2.message : String(error2);
     core.error(msg);
+    logErrorToSentry(error2, {
+      subsystem: "kai-action-run",
+      owner,
+      repo,
+      sender
+    });
     try {
       const db = initAuditDb();
       auditLog(db, {

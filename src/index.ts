@@ -3,10 +3,16 @@ import * as github from "@actions/github";
 import { Octokit } from "@octokit/rest";
 import { execSync, spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync } from "node:fs";
+import { compressPromptWithQwen, estimateTokens } from "./compressor";
+import { appendContextHistory, buildDynamicPromptFromManifest, createDynamicContextPack } from "./context-pack";
 import { buildFooter, buildRouterFooter } from "./footer";
-import { isMetaQuestion, routeEventWithLocalLLM, shouldVerifyCommit, type RouterDecision } from "./router";
+import { isMetaQuestion, routeEventWithLocalLLM, shouldVerifyCommit, suggestTierWithLocalLLM, type RouterDecision } from "./router";
 import { META_TEMPLATE, templateForRoute } from "./templates";
+import { ensureCacheSchema, lookupCachedReply, storeCachedReply } from "./cache";
+import { ensureQualitySchema, recordCacheHit, recordCommitVerification, detectAndRecordFollowup } from "./quality";
+import { selectRelevantFiles } from "./file-focus";
+import { buildCacheFriendlyPrompt } from "./prompt-order";
 
 // --- Audit DB (SQLite, persistent via Docker volume) ---
 
@@ -63,9 +69,147 @@ function initAuditDb(): DatabaseSync {
       estimated_tokens INTEGER NOT NULL,
       estimated_cost_usd REAL NOT NULL,
       reason TEXT
-    )
+    );
+    CREATE TABLE IF NOT EXISTS context_optimizer_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      repo TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      run_id TEXT NOT NULL,
+      model_tier TEXT NOT NULL,
+      raw_prompt_tokens INTEGER NOT NULL,
+      compressed_prompt_tokens INTEGER NOT NULL,
+      cmp_pct INTEGER NOT NULL,
+      used_model INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS model_allowlist (
+      sender TEXT PRIMARY KEY,
+      max_tier TEXT NOT NULL CHECK(max_tier IN ('haiku','sonnet','opus')),
+      added_at TEXT NOT NULL DEFAULT (datetime('now')),
+      added_by TEXT,
+      note TEXT
+    );
+    CREATE TABLE IF NOT EXISTS rate_limits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      sender TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      cost_usd REAL NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_rate_limits_sender_ts ON rate_limits(sender, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_rate_limits_repo_ts ON rate_limits(repo, timestamp)
   `);
+  seedModelAllowlist(db);
+  ensureCacheSchema(db);
+  ensureQualitySchema(db);
   return db;
+}
+
+// Returns the most recent audit_log id matching sender/repo/pr — used to link
+// quality signals (commit_verified, cache_hit, grounded score) to the call.
+function latestAuditId(db: DatabaseSync, sender: string, repoFull: string, prNumber: number): number | null {
+  try {
+    const row = db.prepare(
+      `SELECT id FROM audit_log WHERE sender = ? AND repo = ? AND pr_number = ?
+       ORDER BY id DESC LIMIT 1`,
+    ).get(sender, repoFull, prNumber) as { id?: number } | undefined;
+    return row?.id ?? null;
+  } catch { return null; }
+}
+
+type RateLimitCheck = { allowed: boolean; reason?: string };
+
+// Defaults are conservative; tune via env to match your team size.
+const RATE_LIMIT_SENDER_PER_HOUR = Number(process.env.KAI_RATE_LIMIT_SENDER_PER_HOUR || 20);
+const RATE_LIMIT_REPO_PER_HOUR = Number(process.env.KAI_RATE_LIMIT_REPO_PER_HOUR || 120);
+const RATE_LIMIT_SENDER_COST_PER_DAY = Number(process.env.KAI_RATE_LIMIT_SENDER_COST_PER_DAY || 20);
+
+function checkRateLimit(db: DatabaseSync | null, sender: string, repoFull: string): RateLimitCheck {
+  if (!db) return { allowed: true };
+  try {
+    const hourly = db.prepare(
+      `SELECT COUNT(*) AS n FROM rate_limits WHERE sender = ? AND timestamp >= datetime('now', '-1 hour')`,
+    ).get(sender) as { n: number };
+    if (hourly.n >= RATE_LIMIT_SENDER_PER_HOUR) {
+      return { allowed: false, reason: `sender rate limit: ${hourly.n}/${RATE_LIMIT_SENDER_PER_HOUR} calls in last hour` };
+    }
+    const repoHourly = db.prepare(
+      `SELECT COUNT(*) AS n FROM rate_limits WHERE repo = ? AND timestamp >= datetime('now', '-1 hour')`,
+    ).get(repoFull) as { n: number };
+    if (repoHourly.n >= RATE_LIMIT_REPO_PER_HOUR) {
+      return { allowed: false, reason: `repo rate limit: ${repoHourly.n}/${RATE_LIMIT_REPO_PER_HOUR} calls in last hour` };
+    }
+    const dailyCost = db.prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS c FROM rate_limits WHERE sender = ? AND timestamp >= datetime('now', '-1 day')`,
+    ).get(sender) as { c: number };
+    if (dailyCost.c >= RATE_LIMIT_SENDER_COST_PER_DAY) {
+      return { allowed: false, reason: `sender daily budget: $${dailyCost.c.toFixed(2)}/$${RATE_LIMIT_SENDER_COST_PER_DAY}` };
+    }
+    return { allowed: true };
+  } catch (e) {
+    core.warning(`Rate-limit check failed: ${e}`);
+    return { allowed: true }; // fail open on DB errors; allowlist already blocks opus/sonnet
+  }
+}
+
+function recordRateLimit(db: DatabaseSync | null, sender: string, repoFull: string, tier: string, costUsd: number): void {
+  if (!db) return;
+  try {
+    db.prepare(`INSERT INTO rate_limits (sender, repo, tier, cost_usd) VALUES (?, ?, ?, ?)`)
+      .run(sender, repoFull, tier, costUsd);
+  } catch (e) { core.warning(`Rate-limit record failed: ${e}`); }
+}
+
+// Seeds model_allowlist from KAI_MODEL_ALLOWLIST env, e.g. "alice:opus,bob:sonnet".
+// Idempotent: INSERT OR REPLACE so operators can edit the env var and redeploy.
+function seedModelAllowlist(db: DatabaseSync): void {
+  const raw = process.env.KAI_MODEL_ALLOWLIST?.trim();
+  if (!raw) return;
+  const stmt = db.prepare(
+    `INSERT OR REPLACE INTO model_allowlist (sender, max_tier, added_by, note)
+     VALUES (?, ?, 'env-seed', 'seeded from KAI_MODEL_ALLOWLIST')`,
+  );
+  for (const entry of raw.split(",")) {
+    const [senderRaw, tierRaw] = entry.split(":").map((s) => s?.trim());
+    if (!senderRaw || !tierRaw) continue;
+    const tier = tierRaw.toLowerCase();
+    if (tier !== "haiku" && tier !== "sonnet" && tier !== "opus") continue;
+    try { stmt.run(senderRaw, tier); }
+    catch (e) { core.warning(`Allowlist seed failed for ${senderRaw}: ${e}`); }
+  }
+}
+
+const TIER_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
+
+// Default tier for senders not in allowlist. haiku is safe — cheapest paid tier.
+function defaultAllowedTier(): string {
+  const env = (process.env.KAI_ALLOWLIST_DEFAULT_TIER || "haiku").toLowerCase();
+  return TIER_RANK[env] ? env : "haiku";
+}
+
+function resolveAllowedModel(
+  db: DatabaseSync | null,
+  sender: string,
+  requestedTier: string,
+): { tier: string; downgraded: boolean; maxTier: string } {
+  const fallbackTier = defaultAllowedTier();
+  const requested = requestedTier.toLowerCase();
+  if (!db) {
+    // DB unavailable — fail closed: only allow fallback tier.
+    const allowed = TIER_RANK[requested] <= TIER_RANK[fallbackTier] ? requested : fallbackTier;
+    return { tier: allowed, downgraded: allowed !== requested, maxTier: fallbackTier };
+  }
+  let maxTier = fallbackTier;
+  try {
+    const row = db.prepare(`SELECT max_tier FROM model_allowlist WHERE sender = ?`).get(sender) as { max_tier?: string } | undefined;
+    if (row?.max_tier && TIER_RANK[row.max_tier]) maxTier = row.max_tier;
+  } catch (e) {
+    core.warning(`Allowlist lookup failed for ${sender}: ${e}`);
+  }
+  const allowed = TIER_RANK[requested] <= TIER_RANK[maxTier] ? requested : maxTier;
+  return { tier: allowed, downgraded: allowed !== requested, maxTier };
 }
 
 function sessionStart(db: DatabaseSync, data: {
@@ -132,6 +276,37 @@ function logRouterDecision(db: DatabaseSync, data: {
   }
 }
 
+function logContextOptimization(db: DatabaseSync, data: {
+  repo: string;
+  prNumber: number;
+  runId: string;
+  modelTier: string;
+  rawPromptTokens: number;
+  compressedPromptTokens: number;
+  cmpPct: number;
+  usedModel: boolean;
+  durationMs: number;
+}) {
+  try {
+    db.prepare(`
+      INSERT INTO context_optimizer_log (repo, pr_number, run_id, model_tier, raw_prompt_tokens, compressed_prompt_tokens, cmp_pct, used_model, duration_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      data.repo,
+      data.prNumber,
+      data.runId,
+      data.modelTier,
+      data.rawPromptTokens,
+      data.compressedPromptTokens,
+      data.cmpPct,
+      data.usedModel ? 1 : 0,
+      data.durationMs,
+    );
+  } catch (e) {
+    core.warning(`Context optimization log failed: ${e}`);
+  }
+}
+
 // --- PR Comments Context ---
 
 async function getPRCommentsContext(
@@ -192,13 +367,44 @@ function requireRTK(): string {
     if (!help.includes("rewrite")) {
       throw new Error("Wrong rtk binary (missing 'rewrite' command). Need rtk-ai/rtk, not crates.io rtk.");
     }
+    // RTK actually saves tokens via a Claude Code PreToolUse hook that rewrites
+    // bash commands. Having the binary on PATH without the hook = silent bypass.
+    requireRTKHookConfigured();
     core.info(`RTK verified: ${ver}`);
     return ver;
   } catch (e: unknown) {
-    if (e instanceof Error && e.message.includes("Wrong rtk")) throw e;
+    if (e instanceof Error && (e.message.includes("Wrong rtk") || e.message.includes("RTK hook"))) throw e;
     const msg = e instanceof Error ? e.message.slice(0, 200) : String(e);
     throw new Error(`RTK is required but not available: ${msg}`);
   }
+}
+
+function requireRTKHookConfigured(): void {
+  if (process.env.KAI_RTK_HOOK_SKIP_CHECK === "true") {
+    core.warning("KAI_RTK_HOOK_SKIP_CHECK=true — skipping RTK hook verification (RTK may be bypassed)");
+    return;
+  }
+  const candidates = [
+    process.env.KAI_CLAUDE_SETTINGS_PATH,
+    `${process.env.HOME || "/home/kai"}/.claude/settings.json`,
+    "/home/kai/.claude/settings.json",
+    "/root/.claude/settings.json",
+  ].filter((p): p is string => !!p);
+
+  for (const path of candidates) {
+    try {
+      if (!existsSync(path)) continue;
+      const content = readFileSync(path, "utf-8");
+      if (/\brtk\b/i.test(content)) {
+        core.info(`RTK hook found in ${path}`);
+        return;
+      }
+    } catch { /* try next */ }
+  }
+  throw new Error(
+    "RTK hook not configured in Claude settings.json — RTK would be bypassed silently. "
+    + "Configure PreToolUse hook with rtk, or set KAI_RTK_HOOK_SKIP_CHECK=true to override.",
+  );
 }
 
 // --- Claude Code CLI execution (with RTK hooks) ---
@@ -232,6 +438,17 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function logErrorToSentry(error: unknown, extra?: Record<string, unknown>): void {
+  const sentry = (globalThis as unknown as {
+    Sentry?: { captureException: (err: unknown, context?: Record<string, unknown>) => void };
+  }).Sentry;
+  try {
+    sentry?.captureException?.(error, extra);
+  } catch {
+    // never fail workflow on telemetry
+  }
+}
+
 function gitOutput(command: string): string {
   return execSync(command, { stdio: "pipe", timeout: 30_000, encoding: "utf-8" }).trim();
 }
@@ -250,10 +467,19 @@ function stripProviderCoAuthorFromHead(): void {
   }
 }
 
-function commitVerificationNote(userMessage: string, beforeHead: string, branch: string): string {
+function gitAuthFlag(githubToken: string): string {
+  // http.extraheader keeps the token out of argv and .git/config persisted state.
+  const authHeader = `Authorization: Basic ${Buffer.from(`x-access-token:${githubToken}`).toString("base64")}`;
+  return `-c ${shellQuote(`http.https://github.com/.extraheader=${authHeader}`)}`;
+}
+
+function commitVerificationNote(
+  userMessage: string, beforeHead: string, branch: string, githubToken: string,
+): string {
   if (!shouldVerifyCommit(userMessage) || !beforeHead || !branch) return "";
 
   const quotedBranch = shellQuote(branch);
+  const auth = gitAuthFlag(githubToken);
   try {
     execSync("git reset -- .claudeignore && rm -f .claudeignore", { stdio: "pipe", timeout: 5000 });
   } catch { /* best-effort cleanup for bot-only ignore file */ }
@@ -263,7 +489,7 @@ function commitVerificationNote(userMessage: string, beforeHead: string, branch:
     stripProviderCoAuthorFromHead();
     const amendedHead = gitOutput("git rev-parse HEAD");
     core.info(`Commit requested — pushing existing commit ${amendedHead.slice(0, 7)} to ${branch}`);
-    execSync(`git push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 60_000 });
+    execSync(`git ${auth} push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 60_000 });
     return `\n\n**Commit verification:** pushed \`${amendedHead.slice(0, 7)}\` to \`${branch}\`.`;
   }
 
@@ -282,7 +508,7 @@ function commitVerificationNote(userMessage: string, beforeHead: string, branch:
     stripProviderCoAuthorFromHead();
     const amendedHead = gitOutput("git rev-parse HEAD");
     core.info(`Commit requested — pushing ${amendedHead.slice(0, 7)} to ${branch}`);
-    execSync(`git push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 60_000 });
+    execSync(`git ${auth} push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 60_000 });
     return `\n\n**Commit verification:** pushed \`${amendedHead.slice(0, 7)}\` to \`${branch}\`.`;
   }
 
@@ -293,42 +519,48 @@ function commitVerificationNote(userMessage: string, beforeHead: string, branch:
 function buildCLIPrompt(
   userMessage: string, prTitle: string, prBody: string,
   filesList: string, prCommentsContext: string, repoFullName: string,
-  route: RouterDecision,
+  route: RouterDecision, focusedFiles: string[] = [],
 ): string {
-  const parts = [
+  if (isMetaQuestion(userMessage)) return META_TEMPLATE;
+
+  const archTask = isArchitectureQuestion(userMessage);
+
+  // Stable prefix — identical across calls inside the same PR, so Anthropic's
+  // implicit prompt cache will hit.
+  const stable: string[] = [
     `Kai, AI code reviewer. Service: repos/${repoFullName.split("/").pop()}. PR: "${prTitle}"`,
-    `Router: intent=${route.intent}; confidence=${route.confidence}; contextBudget=${route.maxContextTokens}; commitExpected=${route.commitExpected}`,
-    prBody ? `Desc: ${prBody.slice(0, 300)}` : "",
-    `Files:\n${filesList}`,
   ];
-  if (prCommentsContext) {
-    parts.push(`Prior conversation:\n${prCommentsContext}`);
-  }
-  if (isMetaQuestion(userMessage)) {
-    // Meta question — return fixed template, no CLI needed
-    return META_TEMPLATE;
-  }
-  if (isArchitectureQuestion(userMessage)) {
-    parts.push(
-      `IMPORTANT: Answer about Kodif platform architecture, NOT about the PR code:`,
-      KODIF_ARCH_CONTEXT,
-      `Task: ${userMessage}`,
-      `Rules: concise, markdown, max 50 lines. Focus on architecture, services, connections.`,
-    );
+  if (prBody) stable.push(`Desc: ${prBody.slice(0, 300)}`);
+  stable.push(`Files:\n${filesList}`);
+  if (archTask) {
+    stable.push(`Kodif architecture context:\n${KODIF_ARCH_CONTEXT}`);
   } else {
-    parts.push(
+    stable.push(
       `PR repo checked out in current dir. Use git diff origin/main...HEAD and Read to inspect PROJECT code only.`,
       `Kodif repos available at /home/kai/architect/repos/ (read-only). Use for cross-service context.`,
       `IGNORE: .github/, .claude/, CLAUDE.md, *.yml workflow files — these are bot infrastructure, not project code.`,
-      `Task: ${userMessage}`,
-      `Success criteria: satisfy the task, stay within the selected context, and report concrete evidence.`,
-      `IMPORTANT: Answer EXACTLY what the user asked. Do NOT default to security review unless explicitly asked.`,
       `Rules: concise, markdown, repos/<service>/path/file.py:line refs, max 50 lines. Don't repeat prior analysis.`,
       `For imperative write tasks (fix/add/update/create/patch/refactor/document), commit and push the change to the PR branch unless the user explicitly asks not to.`,
       `Git commits: NEVER add Co-Authored-By headers or AI provider attribution. Author is already set to kodif-ai[bot].`,
     );
   }
-  return parts.filter(Boolean).join("\n");
+
+  // Dynamic tail — changes every call; cache miss happens only here.
+  const dynamic: string[] = [
+    `Router: intent=${route.intent}; confidence=${route.confidence}; contextBudget=${route.maxContextTokens}; commitExpected=${route.commitExpected}`,
+  ];
+  if (focusedFiles.length) {
+    dynamic.push(`Priority files (local LLM pre-selected): ${focusedFiles.join(", ")}`);
+  }
+  if (prCommentsContext) dynamic.push(`Prior conversation:\n${prCommentsContext}`);
+  dynamic.push(
+    `Task: ${userMessage}`,
+    archTask
+      ? `Rules: concise, markdown, max 50 lines. Focus on architecture, services, connections.`
+      : `Success criteria: satisfy the task, stay within the selected context, and report concrete evidence. Answer EXACTLY what the user asked.`,
+  );
+
+  return buildCacheFriendlyPrompt({ stable, dynamic });
 }
 
 // Smart max_turns based on task complexity
@@ -344,8 +576,24 @@ function getMaxTurns(message: string, modelTier: string): number {
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const CLI_TIMEOUT_MS = 300_000;
-const MAX_CLI_RETRIES = 3;
 const RETRY_DELAYS = [15_000, 30_000, 60_000]; // exponential: 15s, 30s, 60s
+
+// Retries multiply cost. Paid tiers get fewer chances so a single broken prompt
+// can't silently burn 3x budget.
+function maxRetriesFor(tier: string): number {
+  if (tier === "opus") return 1;
+  if (tier === "sonnet") return 2;
+  return Number(process.env.KAI_MAX_CLI_RETRIES || 3);
+}
+
+// Per-call cost + prompt-size ceilings. Post-call cost is logged to audit; if
+// over the ceiling we flag status so ops can see drift quickly.
+const MAX_COST_USD_BY_TIER: Record<string, number> = {
+  haiku: Number(process.env.KAI_MAX_COST_USD_HAIKU || 0.5),
+  sonnet: Number(process.env.KAI_MAX_COST_USD_SONNET || 2),
+  opus: Number(process.env.KAI_MAX_COST_USD_OPUS || 5),
+};
+const MAX_PROMPT_TOKENS = Number(process.env.KAI_MAX_PROMPT_TOKENS || 50_000);
 
 const LOADING_GIF = "https://emojis.slackmojis.com/emojis/images/1643514453/4358/loading.gif?1643514453";
 
@@ -371,18 +619,19 @@ interface HeartbeatContext {
 async function callClaudeCLIWithHeartbeat(
   apiKey: string, modelId: string, prompt: string, maxTurns: number,
   heartbeat: HeartbeatContext,
-  db: DatabaseSync, runId: string,
+  db: DatabaseSync, runId: string, modelTier: string,
 ): Promise<CLIResult> {
   const isRoot = process.getuid?.() === 0;
+  const maxRetries = maxRetriesFor(modelTier);
 
-  for (let attempt = 1; attempt <= MAX_CLI_RETRIES; attempt++) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     sessionUpdate(db, runId, `cli-attempt-${attempt}`, { attempt });
 
     if (attempt > 1) {
       const delay = RETRY_DELAYS[attempt - 2] ?? 60_000;
-      core.info(`Retry ${attempt}/${MAX_CLI_RETRIES} in ${delay / 1000}s`);
+      core.info(`Retry ${attempt}/${maxRetries} in ${delay / 1000}s`);
       await safeUpdate(heartbeat.octokit, heartbeat.owner, heartbeat.repo, heartbeat.replyCommentId,
-        `> ⚠️ Retrying (attempt ${attempt}/${MAX_CLI_RETRIES})...\n\n🔄 Previous attempt failed, waiting ${delay / 1000}s before retry\n🔍 **${heartbeat.modelLabel}**\n\n_Delete this comment to cancel._`);
+        `> ⚠️ Retrying (attempt ${attempt}/${maxRetries})...\n\n🔄 Previous attempt failed, waiting ${delay / 1000}s before retry\n🔍 **${heartbeat.modelLabel}**\n\n_Delete this comment to cancel._`);
       await new Promise(r => setTimeout(r, delay));
     }
 
@@ -395,7 +644,7 @@ async function callClaudeCLIWithHeartbeat(
       core.warning(`CLI attempt ${attempt} failed: ${msg}`);
       sessionUpdate(db, runId, `failed-attempt-${attempt}`, { error: msg });
 
-      if (attempt === MAX_CLI_RETRIES) {
+      if (attempt === maxRetries) {
         sessionUpdate(db, runId, "failed", { status: "failed", error: msg });
         throw e;
       }
@@ -530,7 +779,12 @@ async function run() {
     const githubToken = core.getInput("github_token");
     const anthropicApiKey = core.getInput("anthropic_api_key");
     const routerUrl = core.getInput("router_url") || process.env.KAI_ROUTER_URL;
-    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "FunctionGemma-270M";
+    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "LFM2-350M";
+    const compressorUrl = core.getInput("compressor_url") || process.env.KAI_COMPRESSOR_URL;
+    const compressorModel = core.getInput("compressor_model") || process.env.KAI_COMPRESSOR_MODEL || "LFM2-350M";
+    const compressorDisabled = (core.getInput("compressor_disable") || process.env.KAI_COMPRESSOR_DISABLE || "false").toLowerCase() === "true";
+    const compressorMinQueryTokens = Number(core.getInput("compressor_min_query_tokens") || process.env.KAI_COMPRESSOR_MIN_QUERY_TOKENS || 10);
+    const compressorMinPromptTokens = Number(core.getInput("compressor_min_prompt_tokens") || process.env.KAI_COMPRESSOR_MIN_PROMPT_TOKENS || 2200);
 
     const { context } = github;
     const event = context.eventName;
@@ -553,10 +807,35 @@ async function run() {
     octokit = new Octokit({ auth: githubToken });
     ({ owner, repo } = context.repo);
 
+    // Audit + Session: init DB early so allowlist lookup sees it.
+    const auditDb = initAuditDb();
+
     const idx = commentBody.toLowerCase().indexOf(trigger.toLowerCase());
     rawMessage = commentBody.slice(idx + trigger.length).trim();
-    const { model: modelTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
+    const { model: parsedTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
+    const userSpecifiedTier = /\buse\s+(haiku|sonnet|opus)\b/i.test(rawMessage);
+
+    // If the user didn't explicitly pick a tier, ask the local LLM to suggest one
+    // based on task complexity. Honors user override + allowlist cap.
+    let suggestedTier: string | null = null;
+    if (!userSpecifiedTier && routerUrl) {
+      try {
+        suggestedTier = await suggestTierWithLocalLLM(userMessage, {
+          url: routerUrl, model: routerModel, timeoutMs: 2500,
+        });
+        if (suggestedTier) core.info(`Local-LLM tier suggestion: ${suggestedTier} (task: "${userMessage.slice(0, 40)}")`);
+      } catch (e) { core.warning(`Tier suggest failed: ${e}`); }
+    }
+    const requestedTier = suggestedTier ?? parsedTier;
+    const { tier: modelTier, downgraded: tierDowngraded, maxTier: senderMaxTier } =
+      resolveAllowedModel(auditDb, sender, requestedTier);
     const selectedModel = MODELS[modelTier];
+    const tierNotice = tierDowngraded
+      ? `\n\n> _Note: @${sender} is allowed up to **${senderMaxTier}**. Requested **${requestedTier}** was downgraded to **${modelTier}**. Ask an admin to update the allowlist._`
+      : "";
+    if (tierDowngraded) {
+      core.warning(`Tier downgrade for @${sender}: ${requestedTier} -> ${modelTier} (max=${senderMaxTier})`);
+    }
     const route = await routeEventWithLocalLLM(userMessage, modelTier, {
       url: routerUrl,
       model: routerModel,
@@ -565,9 +844,6 @@ async function run() {
 
     core.info(`Triggered by @${sender} in #${issueNumber}`);
     core.info(`Router: ${route.intent} -> ${route.decision} (${route.reason}, confidence ${route.confidence})`);
-
-    // Audit + Session: init DB
-    const auditDb = initAuditDb();
     const runId = `${owner}/${repo}#${issueNumber}-${Date.now()}`;
     const startTime = Date.now();
     logRouterDecision(auditDb, {
@@ -592,6 +868,13 @@ async function run() {
     try {
       await octokit.reactions.createForIssueComment({ owner, repo, comment_id: commentId, content: "eyes" });
     } catch { /* */ }
+
+    // Quality signal: if sender pinged Kai on the same PR within 15 min, mark
+    // the previous completed run as a follow-up (= user wasn't satisfied).
+    try {
+      const { previousAuditId } = detectAndRecordFollowup(auditDb, sender, `${owner}/${repo}`, issueNumber);
+      if (previousAuditId) core.info(`Follow-up detected; flagged audit #${previousAuditId}`);
+    } catch (e) { core.warning(`Follow-up detection failed: ${e}`); }
 
     auditLog(auditDb, {
       sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
@@ -634,6 +917,25 @@ async function run() {
       return;
     }
 
+    // Rate-limit BEFORE spinning up the heavy CLI path — cheap deterministic guard.
+    const rateLimit = checkRateLimit(auditDb, sender, `${owner}/${repo}`);
+    if (!rateLimit.allowed) {
+      const durationSec = Math.round((Date.now() - startTime) / 1000);
+      const footer = buildRouterFooter(routerModel, durationSec);
+      const { data: rlReply } = await octokit.issues.createComment({
+        owner, repo, issue_number: issueNumber,
+        body: `> @${sender}: ${rawMessage}\n\n⛔ Rate limit hit: ${rateLimit.reason}. Try again later.\n\n---\n<sub>${footer}</sub>`,
+      });
+      sessionUpdate(auditDb, runId, "completed", { status: "rate-limited", replyCommentId: rlReply.id });
+      auditLog(auditDb, {
+        sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
+        model: routerModel, message: rawMessage, durationMs: Date.now() - startTime,
+        costUsd: 0, tokensIn: 0, tokensOut: 0, status: "rate-limited", error: rateLimit.reason,
+      });
+      core.warning(`Rate-limited @${sender}: ${rateLimit.reason}`);
+      return;
+    }
+
     // Require CLI + RTK only after no-model router/template paths are handled.
     requireClaudeCLI();
     const rtkVersion = requireRTK();
@@ -651,6 +953,8 @@ async function run() {
     // Get PR context
     let prTitle = "", prBody = "", filesList = "", prCommentsContext = "";
     let prHeadRef = "", beforeHead = "";
+    let contextManifestPath = "";
+    let contextHistoryPath = "";
 
     try {
       await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(1, 2, selectedModel.label));
@@ -662,14 +966,16 @@ async function run() {
       prHeadRef = pr.head.ref;
 
       try {
-        // Configure git for push (bot identity + token auth)
+        // Configure git identity; auth goes through http.extraheader so the token
+        // never lands in .git/config or process argv (safer on shared runners).
         execSync(`git config user.name "kodif-ai[bot]" && git config user.email "kodif-ai[bot]@users.noreply.github.com"`, {
           stdio: "pipe", timeout: 5000,
         });
-        execSync(`git remote set-url origin https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git`, {
+        execSync(`git remote set-url origin https://github.com/${owner}/${repo}.git`, {
           stdio: "pipe", timeout: 5000,
         });
-        execSync(`git fetch origin ${shellQuote(pr.head.ref)} && git checkout ${shellQuote(pr.head.ref)}`, {
+        const auth = gitAuthFlag(githubToken);
+        execSync(`git ${auth} fetch origin ${shellQuote(pr.head.ref)} && git checkout ${shellQuote(pr.head.ref)}`, {
           stdio: "pipe", timeout: 30_000, encoding: "utf-8",
         });
         beforeHead = gitOutput("git rev-parse HEAD");
@@ -691,6 +997,39 @@ async function run() {
       core.warning(`PR context error: ${e instanceof Error ? e.message : e}`);
     }
 
+    try {
+      const contextPack = createDynamicContextPack({
+        runId,
+        owner,
+        repo,
+        issueNumber,
+        userMessage,
+        rawMessage,
+        route,
+        prTitle,
+        prBody,
+        filesList,
+        prCommentsContext,
+        repoFullName: `${owner}/${repo}`,
+        architectureContext: isArchitectureQuestion(userMessage) ? KODIF_ARCH_CONTEXT : undefined,
+      });
+      contextManifestPath = contextPack.manifestPath;
+      contextHistoryPath = contextPack.historyPath;
+      appendContextHistory(contextHistoryPath, "routing", {
+        intent: route.intent,
+        decision: route.decision,
+        source: route.source ?? "unknown",
+      });
+    } catch (e: unknown) {
+      core.warning(`Context pack build failed: ${e instanceof Error ? e.message : String(e)}`);
+      logErrorToSentry(e, {
+        subsystem: "dynamic-context-pack",
+        owner,
+        repo,
+        issueNumber,
+      });
+    }
+
     // Call Claude CLI with heartbeat + retry
     let result = "";
     let footer = "";
@@ -709,7 +1048,119 @@ async function run() {
         });
       } catch { /* non-critical */ }
 
-      const prompt = buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route);
+      // File-focus pre-step: for big PRs, ask local LLM which 3-5 files matter
+      // most for this task. Claude reads fewer files → fewer tokens. Best-effort
+      // — empty list just means Claude picks files itself.
+      let focusedFiles: string[] = [];
+      if (compressorUrl && filesList && !isArchitectureQuestion(userMessage)) {
+        try {
+          focusedFiles = await selectRelevantFiles(userMessage, filesList, {
+            url: compressorUrl, model: compressorModel, timeoutMs: 2500, maxFiles: 5,
+          });
+          if (focusedFiles.length) core.info(`File focus: ${focusedFiles.join(", ")}`);
+        } catch (e) { core.warning(`File focus failed: ${e}`); }
+      }
+
+      const prompt = contextManifestPath
+        ? buildDynamicPromptFromManifest(
+          userMessage,
+          `${owner}/${repo}`,
+          route,
+          contextManifestPath,
+          isArchitectureQuestion(userMessage),
+        )
+        : buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, `${owner}/${repo}`, route, focusedFiles);
+
+      // Dedup: if the identical finalPrompt was answered for this PR in the last
+      // 24h, return the cached reply without touching Claude (0 tokens). Hash
+      // covers task + files + comments, so any change invalidates naturally.
+      const cached = lookupCachedReply(auditDb, prompt, `${owner}/${repo}`, issueNumber);
+      if (cached) {
+        const aid = latestAuditId(auditDb, sender, `${owner}/${repo}`, issueNumber);
+        if (aid != null) recordCacheHit(auditDb, aid);
+        const durationSec = Math.round((Date.now() - startTime) / 1000);
+        const cacheFooter = `Kai · cache hit · 0K in / 0K out · $0.0000 · 0t · ${durationSec}s · deeper analysis: use sonnet / use opus`;
+        await safeUpdate(octokit, owner, repo, replyCommentId,
+          `> @${sender}: ${rawMessage}${tierNotice}\n\n♻️ **Cached reply** (${cached.created_at}, same prompt within 24h):\n\n${cached.reply}\n\n---\n<sub>${cacheFooter}</sub>`);
+        sessionUpdate(auditDb, runId, "completed", { status: "completed-cached" });
+        auditLog(auditDb, {
+          sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
+          model: selectedModel.label, message: rawMessage, durationMs: Date.now() - startTime,
+          costUsd: 0, tokensIn: 0, tokensOut: 0, rtkSavings: "100%", status: "completed-cached",
+        });
+        return;
+      }
+      if (contextHistoryPath) {
+        appendContextHistory(contextHistoryPath, "prompt-built", {
+          promptTokens: estimateTokens(prompt),
+          dynamicManifest: contextManifestPath || null,
+        });
+      }
+      let finalPrompt = prompt;
+      let cmpSavings = "0%";
+      try {
+        const compressed = await compressPromptWithQwen(prompt, userMessage, modelTier, {
+          url: compressorUrl,
+          model: compressorModel,
+          timeoutMs: Number(process.env.KAI_COMPRESSOR_TIMEOUT_MS || 1500),
+          disabled: compressorDisabled,
+          minQueryTokens: compressorMinQueryTokens,
+          minPromptTokens: compressorMinPromptTokens,
+          budgetByTier: {
+            haiku: Number(process.env.KAI_COMPRESSOR_BUDGET_HAIKU || 6000),
+            sonnet: Number(process.env.KAI_COMPRESSOR_BUDGET_SONNET || 24000),
+            opus: Number(process.env.KAI_COMPRESSOR_BUDGET_OPUS || 80000),
+          },
+        });
+        finalPrompt = compressed.prompt;
+        cmpSavings = `${compressed.metrics.cmpPct}%`;
+        core.info(`Context compression: ${compressed.metrics.rawTokens} -> ${compressed.metrics.compressedTokens} tokens (${cmpSavings}, model=${compressed.metrics.usedModel})`);
+        logContextOptimization(auditDb, {
+          repo: `${owner}/${repo}`,
+          prNumber: issueNumber,
+          runId,
+          modelTier,
+          rawPromptTokens: compressed.metrics.rawTokens,
+          compressedPromptTokens: compressed.metrics.compressedTokens,
+          cmpPct: compressed.metrics.cmpPct,
+          usedModel: compressed.metrics.usedModel,
+          durationMs: compressed.metrics.durationMs,
+        });
+        if (contextHistoryPath) {
+          appendContextHistory(contextHistoryPath, "compression", {
+            cmpPct: compressed.metrics.cmpPct,
+            rawTokens: compressed.metrics.rawTokens,
+            compressedTokens: compressed.metrics.compressedTokens,
+            usedModel: compressed.metrics.usedModel,
+          });
+        }
+      } catch (compressionError) {
+        const compressionErrorMessage = compressionError instanceof Error ? compressionError.message : String(compressionError);
+        core.error(`Context compression failed: ${compressionErrorMessage}`);
+        if (contextHistoryPath) {
+          appendContextHistory(contextHistoryPath, "compression-failed", {
+            reason: compressionErrorMessage,
+          });
+        }
+        logErrorToSentry(compressionError, {
+          subsystem: "context-compressor",
+          owner,
+          repo,
+          issueNumber,
+          modelTier,
+        });
+        throw compressionError;
+      }
+      // Hard prompt-size ceiling — guards against "compressor returned original"
+      // or huge paste in comment. Fails closed before paying the model.
+      const finalPromptTokens = estimateTokens(finalPrompt);
+      if (finalPromptTokens > MAX_PROMPT_TOKENS) {
+        throw new Error(
+          `Final prompt ${finalPromptTokens} tokens exceeds KAI_MAX_PROMPT_TOKENS=${MAX_PROMPT_TOKENS}. `
+          + `Compression may be disabled or ineffective. Refusing to call paid model.`,
+        );
+      }
+
       const maxTurns = getMaxTurns(userMessage, modelTier);
       core.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);
       const heartbeatCtx: HeartbeatContext = {
@@ -717,32 +1168,62 @@ async function run() {
       };
 
       const r = await callClaudeCLIWithHeartbeat(
-        anthropicApiKey, selectedModel.id, prompt, maxTurns, heartbeatCtx, auditDb, runId);
+        anthropicApiKey, selectedModel.id, finalPrompt, maxTurns, heartbeatCtx, auditDb, runId, modelTier);
       result = r.text;
+      let commitVerifiedOutcome: boolean | null = null;
       try {
-        result += commitVerificationNote(userMessage, beforeHead, prHeadRef);
+        const note = commitVerificationNote(userMessage, beforeHead, prHeadRef, githubToken);
+        result += note;
+        if (shouldVerifyCommit(userMessage)) {
+          commitVerifiedOutcome = note.includes("Commit verification:") && !note.includes("failed");
+        }
       } catch (e: unknown) {
         const verifyError = e instanceof Error ? e.message.slice(0, 500) : String(e);
         core.error(`Commit verification failed: ${verifyError}`);
         result += `\n\n**Commit verification failed:** ${verifyError}`;
+        commitVerifiedOutcome = false;
       }
 
       const durationMs = Date.now() - startTime;
       const rtkPct = r.rtkSavings || "— %";
-      if (!r.rtkSavings || r.rtkSavings === "0.0%") {
-        core.error(`CRITICAL: RTK savings empty or zero — tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
+      const rtkBypassed = !r.rtkSavings || r.rtkSavings === "0.0%";
+      if (rtkBypassed) {
+        core.error(`CRITICAL: RTK savings empty or zero — RTK was bypassed or tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
+        result += `\n\n> ⚠️ **RTK bypassed** — no token savings recorded for this call. Operator: verify hook in \`$HOME/.claude/settings.json\`.`;
+      }
+      const costCap = MAX_COST_USD_BY_TIER[modelTier] ?? MAX_COST_USD_BY_TIER.haiku;
+      const costOverCap = r.costUsd > costCap;
+      if (costOverCap) {
+        core.error(`Cost cap exceeded: $${r.costUsd.toFixed(4)} > $${costCap} (${modelTier})`);
+        result += `\n\n> ⚠️ **Cost cap exceeded** for ${modelTier}: $${r.costUsd.toFixed(4)} > $${costCap}. Operator alerted.`;
       }
       const durationSec = Math.round(durationMs / 1000);
       footer = buildFooter(
-        selectedModel.label, rtkPct, r.inputTokens, r.outputTokens,
+        selectedModel.label, rtkPct, cmpSavings, r.inputTokens, r.outputTokens,
         r.costUsd, r.numTurns, durationSec, r.cacheReadTokens);
 
+      const finalStatus = costOverCap
+        ? "completed-cost-over-cap"
+        : rtkBypassed ? "completed-rtk-bypass" : "completed";
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
         model: selectedModel.label, message: rawMessage, durationMs,
         costUsd: r.costUsd, tokensIn: r.inputTokens, tokensOut: r.outputTokens,
-        rtkSavings: rtkPct, status: "completed",
+        rtkSavings: rtkPct, status: finalStatus,
       });
+      recordRateLimit(auditDb, sender, `${owner}/${repo}`, modelTier, r.costUsd);
+
+      // Link quality signals to the just-inserted audit row, and remember the
+      // reply for 24h so an identical follow-up hits dedup cache.
+      const newAuditId = latestAuditId(auditDb, sender, `${owner}/${repo}`, issueNumber);
+      if (newAuditId != null && commitVerifiedOutcome !== null) {
+        try { recordCommitVerification(auditDb, newAuditId, commitVerifiedOutcome); }
+        catch (e) { core.warning(`Quality link failed: ${e}`); }
+      }
+      if (!costOverCap && !rtkBypassed && result.trim()) {
+        try { storeCachedReply(auditDb, finalPrompt, `${owner}/${repo}`, issueNumber, sender, result, r.costUsd); }
+        catch (e) { core.warning(`Cache store failed: ${e}`); }
+      }
     }
 
     if (!(await commentExists(octokit, owner, repo, replyCommentId))) {
@@ -752,7 +1233,7 @@ async function run() {
 
     sessionUpdate(auditDb, runId, "responding");
     await safeUpdate(octokit, owner, repo, replyCommentId,
-      `> @${sender}: ${rawMessage}\n\n${result}\n\n---\n<sub>${footer}</sub>`);
+      `> @${sender}: ${rawMessage}${tierNotice}\n\n${result}\n\n---\n<sub>${footer}</sub>`);
     sessionUpdate(auditDb, runId, "completed", { status: "completed" });
 
     core.info("Done");
@@ -760,6 +1241,12 @@ async function run() {
     // Global error handler — ALWAYS post error to PR, never silently crash
     const msg = error instanceof Error ? error.message : String(error);
     core.error(msg);
+    logErrorToSentry(error, {
+      subsystem: "kai-action-run",
+      owner,
+      repo,
+      sender,
+    });
 
     // Audit: log error
     try {

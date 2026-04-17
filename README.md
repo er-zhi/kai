@@ -46,7 +46,7 @@ jobs:
           github_token: ${{ steps.kai-token.outputs.token }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           router_url: http://localhost:11434
-          router_model: qwen2.5-0.5b-instruct
+          router_model: LFM2-350M
 ```
 
 ## Local Router LLM
@@ -60,7 +60,7 @@ docker compose -f docker-compose.router.yml run --rm kai-router-pull
 docker compose -f docker-compose.router.yml up -d kai-router-llm
 ```
 
-Keep `router_url` pointed at `http://localhost:11434`. Default classifier is `qwen2.5-0.5b-instruct` (Q4_K_M gguf, ~470 MB, <1s/classification on CPU).
+Keep `router_url` pointed at `http://localhost:11434`. Default classifier is `LFM2-350M` (Q4_0 gguf, ~220 MB, ~2x faster on CPU than Qwen3 per Liquid AI benchmarks).
 
 ## Usage
 
@@ -81,4 +81,4 @@ Delete Kai's working comment to cancel a running job.
 | `anthropic_api_key` | No | — | Anthropic API key for Claude |
 | `trigger_phrase` | No | `@kai` | Trigger phrase |
 | `router_url` | No | — | Local LLM router URL (OpenAI-compatible); required before paid model calls |
-| `router_model` | No | `qwen2.5-0.5b-instruct` | Local router classifier model |
+| `router_model` | No | `LFM2-350M` | Local router classifier model |
