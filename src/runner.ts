@@ -8,6 +8,7 @@ import type { RouterDecision } from "./types";
 import { parseRtkSavings } from "./rtk";
 import { sessionUpdate } from "./audit";
 import { calculateAnthropicUsageCostUsd } from "./budget";
+import { buildClaudeSpawnSpec } from "./runner-spawn";
 
 export type CLIResult = {
   text: string;
@@ -256,9 +257,13 @@ async function runCLIWithHeartbeat(
     let output = "";
     let settled = false;
 
-    const child = isRoot
-      ? spawn("su", ["-s", "/bin/bash", "kai", "-c", `ANTHROPIC_API_KEY=${apiKey} claude ${claudeArgs.join(" ")}`], { env: { ...process.env, ANTHROPIC_API_KEY: apiKey } })
-      : spawn("claude", claudeArgs, { env: { ...process.env, ANTHROPIC_API_KEY: apiKey } });
+    const spawnSpec = buildClaudeSpawnSpec({
+      isRoot,
+      apiKey,
+      claudeArgs,
+      env: process.env,
+    });
+    const child = spawn(spawnSpec.command, spawnSpec.args, { env: spawnSpec.env });
 
     child.stdin?.write(prompt);
     child.stdin?.end();

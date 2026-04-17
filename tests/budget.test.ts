@@ -51,6 +51,13 @@ test("getMaxTurns caps short-answer at 1 turn", () => {
   assert.equal(getMaxTurns("fix the failing test in auth.py", "haiku"), 20);
 });
 
+test("getMaxTurns does not treat 'after ... fix' as an edit command", () => {
+  // Regression: validation pings like "validate after env_file fix" were
+  // misclassified as edit requests (20 turns), inflating worst-case cost and
+  // causing preflight refusal under haiku cap.
+  assert.equal(getMaxTurns("validate after env_file fix", "haiku"), 12);
+});
+
 test("disallowedToolsFor blocks every exploration tool on short-answer", () => {
   // Without these, Claude burned 173K tokens re-reading files on 2026-04-17.
   const blocked = disallowedToolsFor("biggest risk? one sentence.");

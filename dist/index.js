@@ -28847,10 +28847,14 @@ var MAX_COST_USD_BY_TIER = {
 function isShortAnswerRequest(message) {
   return /\b(one\s+(?:sentence|line|word|paragraph)|1\s+sentence|single\s+sentence|briefly|tl;?\s*dr|in\s+(?:a\s+)?(?:word|sentence|line)|short\s+answer|yes\/no|quick(?:ly)?)\b/i.test(message);
 }
+function isImperativeWriteRequest(message) {
+  const normalized = message.trim().toLowerCase();
+  return /^(fix|commit|push|apply|create|patch|refactor|document)\b/.test(normalized);
+}
 function getMaxTurns(message, modelTier) {
   if (modelTier === "opus") return 25;
   if (modelTier === "sonnet") return 20;
-  if (/fix|commit|push|apply|create|patch|refactor|document/i.test(message)) return 20;
+  if (isImperativeWriteRequest(message)) return 20;
   if (isShortAnswerRequest(message)) return 1;
   const isTrulySimple = message.length < 50 && /^(top|list|one-liner|quick|summarize|how many|which file)/i.test(message);
   return isTrulySimple ? 8 : 12;
@@ -28902,6 +28906,19 @@ function preflightBudget(userMessage, promptTokens, tier) {
     };
   }
   return { allowed: true };
+}
+
+// src/runner-spawn.ts
+function buildClaudeSpawnSpec(input) {
+  const childEnv = { ...input.env, ANTHROPIC_API_KEY: input.apiKey };
+  if (!input.isRoot) {
+    return { command: "claude", args: input.claudeArgs, env: childEnv };
+  }
+  return {
+    command: "sudo",
+    args: ["-E", "-u", "kai", "--", "claude", ...input.claudeArgs],
+    env: childEnv
+  };
 }
 
 // src/runner.ts
@@ -29020,7 +29037,13 @@ async function runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, hb
     const startTime = Date.now();
     let output = "";
     let settled = false;
-    const child = isRoot ? (0, import_node_child_process.spawn)("su", ["-s", "/bin/bash", "kai", "-c", `ANTHROPIC_API_KEY=${apiKey} claude ${claudeArgs.join(" ")}`], { env: { ...process.env, ANTHROPIC_API_KEY: apiKey } }) : (0, import_node_child_process.spawn)("claude", claudeArgs, { env: { ...process.env, ANTHROPIC_API_KEY: apiKey } });
+    const spawnSpec = buildClaudeSpawnSpec({
+      isRoot,
+      apiKey,
+      claudeArgs,
+      env: process.env
+    });
+    const child = (0, import_node_child_process.spawn)(spawnSpec.command, spawnSpec.args, { env: spawnSpec.env });
     child.stdin?.write(prompt);
     child.stdin?.end();
     child.stdout?.on("data", (data) => {

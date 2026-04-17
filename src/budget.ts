@@ -32,10 +32,18 @@ export function isShortAnswerRequest(message: string): boolean {
   return /\b(one\s+(?:sentence|line|word|paragraph)|1\s+sentence|single\s+sentence|briefly|tl;?\s*dr|in\s+(?:a\s+)?(?:word|sentence|line)|short\s+answer|yes\/no|quick(?:ly)?)\b/i.test(message);
 }
 
+function isImperativeWriteRequest(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  // Keep this narrow: we only want expensive write-flow turns for explicit
+  // imperative editing intent, not for status phrases like
+  // "validate after env_file fix".
+  return /^(fix|commit|push|apply|create|patch|refactor|document)\b/.test(normalized);
+}
+
 export function getMaxTurns(message: string, modelTier: string): number {
   if (modelTier === "opus") return 25;
   if (modelTier === "sonnet") return 20;
-  if (/fix|commit|push|apply|create|patch|refactor|document/i.test(message)) return 20;
+  if (isImperativeWriteRequest(message)) return 20;
   if (isShortAnswerRequest(message)) return 1;
   const isTrulySimple = message.length < 50
     && /^(top|list|one-liner|quick|summarize|how many|which file)/i.test(message);
