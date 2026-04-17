@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RouterDecision } from "../src/router";
-import { META_TEMPLATE, OFFTOPIC_TEMPLATE, templateForRoute } from "../src/templates";
+import type { RouterDecision } from "../dist/router.js";
+import { META_TEMPLATE, OFFTOPIC_TEMPLATE, templateForRoute } from "../dist/templates.js";
 
 function fakeRoute(intent: RouterDecision["intent"], decision: RouterDecision["decision"]): RouterDecision {
   return {

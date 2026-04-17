@@ -81,7 +81,7 @@ export function createDynamicContextPack(input: ContextPackInput): DynamicContex
       architecture: input.architectureContext ? architecturePath : null,
       history: historyPath,
     },
-    optimizationChain: "RTK + Qwen3 context compression",
+    optimizationChain: "RTK + local context compression",
   };
 
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
@@ -110,7 +110,7 @@ export function buildDynamicPromptFromManifest(
     `Task: ${userMessage}`,
     `Router: intent=${route.intent}; decision=${route.decision}; confidence=${route.confidence}; contextBudget=${route.maxContextTokens}; commitExpected=${route.commitExpected}`,
     `Dynamic context manifest: ${manifestPath}`,
-    "Optimization chain: RTK command rewrites + Qwen3 context compression.",
+    "Optimization chain: RTK command rewrites + local context compression.",
     "Read only the necessary context files from manifest (start with task + changed-files + pr-meta).",
   ];
 

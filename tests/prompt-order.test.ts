@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCacheFriendlyPrompt, sharesStablePrefix } from "../src/prompt-order";
+import { buildCacheFriendlyPrompt, sharesStablePrefix } from "../dist/prompt-order.js";
 
 test("stable context appears before the task block", () => {
   const out = buildCacheFriendlyPrompt({

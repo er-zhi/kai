@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { ensureCacheSchema, hashPrompt, lookupCachedReply, storeCachedReply } from "../src/cache";
+import { ensureCacheSchema, hashPrompt, lookupCachedReply, storeCachedReply } from "../dist/cache.js";
 
 function freshDb(): DatabaseSync {
   const db = new DatabaseSync(":memory:");

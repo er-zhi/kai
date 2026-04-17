@@ -3,8 +3,8 @@ import test from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { appendContextHistory, buildDynamicPromptFromManifest, createDynamicContextPack } from "../src/context-pack";
-import type { RouterDecision } from "../src/router";
+import { appendContextHistory, buildDynamicPromptFromManifest, createDynamicContextPack } from "../dist/context-pack.js";
+import type { RouterDecision } from "../dist/router.js";
 
 const route: RouterDecision = {
   intent: "review",
@@ -71,5 +71,5 @@ test("buildDynamicPromptFromManifest references manifest path and chain", () => 
     false,
   );
   assert.match(prompt, /Dynamic context manifest/);
-  assert.match(prompt, /RTK command rewrites \+ Qwen3 context compression/);
+  assert.match(prompt, /RTK command rewrites \+ local context compression/);
 });

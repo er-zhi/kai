@@ -1,6 +1,8 @@
 // Local-LLM pre-step: given user task + changed-files list, pick the small set
 // of files Claude should look at first. Reduces wandering Read calls.
 
+import { isRecord, parseJsonObject } from "./json";
+
 export type FileFocusConfig = {
   url: string;
   model?: string;
@@ -24,18 +26,18 @@ export async function selectRelevantFiles(
   filesList: string,
   config: FileFocusConfig,
 ): Promise<string[]> {
-  const maxFiles = config.maxFiles ?? 5;
+  if (config.maxFiles == null) throw new Error("file-focus maxFiles is required");
+  if (config.timeoutMs == null) throw new Error("file-focus timeoutMs is required");
+  if (!config.model) throw new Error("KAI_FILE_FOCUS_MODEL is required");
+  const maxFiles = config.maxFiles;
   const files = filesList.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
   if (files.length <= maxFiles) return files;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? 2000);
   try {
     const response = await fetch(`${config.url.replace(/\/$/, "")}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: config.model ?? "LFM2-350M",
+        model: config.model,
         messages: [{
           role: "user",
           content: `Pick up to ${maxFiles} most relevant file paths for this task.\nTask: ${JSON.stringify(userMessage)}\nFiles:\n${files.join("\n")}\nReturn {"files":["path","..."]} with exact paths from the list.`,
@@ -45,24 +47,18 @@ export async function selectRelevantFiles(
         max_tokens: 256,
         response_format: FILE_FOCUS_RESPONSE_FORMAT,
       }),
-      signal: controller.signal,
+      signal: AbortSignal.timeout(config.timeoutMs),
     });
     if (!response.ok) return [];
     const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     const content = body.choices?.[0]?.message?.content ?? "";
-    // Same markdown-fence tolerance as other parsers — small models love wrapping.
-    const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    const jsonStart = (fenced ? fenced[1] : content).indexOf("{");
-    const rawJson = jsonStart >= 0 ? (fenced ? fenced[1] : content).slice(jsonStart) : content;
-    let parsed: { files?: unknown };
-    try { parsed = JSON.parse(rawJson.trim()); } catch { return []; }
-    if (!parsed.files || !Array.isArray(parsed.files)) return [];
+    let parsed: unknown;
+    try { parsed = parseJsonObject(content); } catch { return []; }
+    if (!isRecord(parsed) || !Array.isArray(parsed.files)) return [];
     const known = new Set(files);
     // Only trust paths the LLM actually saw (avoid hallucinated paths).
     return parsed.files.filter((p): p is string => typeof p === "string" && known.has(p)).slice(0, maxFiles);
   } catch {
     return [];
-  } finally {
-    clearTimeout(timeout);
   }
 }

@@ -3,12 +3,12 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server
     restart: unless-stopped
     ports:
-      - "${KAI_ROUTER_PORT:-11434}:8080"
+      - "${KAI_ROUTER_PORT}:8080"
     volumes:
       - kai-router-gguf:/models
     command:
       - -m
-      - /models/${KAI_ROUTER_GGUF:-LFM2-350M-Q4_0.gguf}
+      - /models/${KAI_ROUTER_GGUF}
       - --host
       - 0.0.0.0
       - --port
@@ -31,9 +31,9 @@ services:
     volumes:
       - kai-router-gguf:/models
     environment:
-      KAI_ROUTER_HF_REPO: ${KAI_ROUTER_HF_REPO:-LiquidAI/LFM2-350M-GGUF}
-      KAI_ROUTER_GGUF: ${KAI_ROUTER_GGUF:-LFM2-350M-Q4_0.gguf}
-      KAI_ROUTER_MIN_BYTES: ${KAI_ROUTER_MIN_BYTES:-100000000}
+      KAI_ROUTER_HF_REPO: ${KAI_ROUTER_HF_REPO}
+      KAI_ROUTER_GGUF: ${KAI_ROUTER_GGUF}
+      KAI_ROUTER_MIN_BYTES: ${KAI_ROUTER_MIN_BYTES}
     command:
       - sh
       - -c
@@ -59,12 +59,12 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server
     restart: unless-stopped
     ports:
-      - "${KAI_COMPRESSOR_PORT:-11435}:8081"
+      - "${KAI_COMPRESSOR_PORT}:8081"
     volumes:
       - kai-compressor-gguf:/models
     command:
       - -m
-      - /models/${KAI_COMPRESSOR_GGUF:-LFM2-350M-Q4_0.gguf}
+      - /models/${KAI_COMPRESSOR_GGUF}
       - --host
       - 0.0.0.0
       - --port
@@ -87,9 +87,9 @@ services:
     volumes:
       - kai-compressor-gguf:/models
     environment:
-      KAI_COMPRESSOR_HF_REPO: ${KAI_COMPRESSOR_HF_REPO:-LiquidAI/LFM2-350M-GGUF}
-      KAI_COMPRESSOR_GGUF: ${KAI_COMPRESSOR_GGUF:-LFM2-350M-Q4_0.gguf}
-      KAI_COMPRESSOR_MIN_BYTES: ${KAI_COMPRESSOR_MIN_BYTES:-100000000}
+      KAI_COMPRESSOR_HF_REPO: ${KAI_COMPRESSOR_HF_REPO}
+      KAI_COMPRESSOR_GGUF: ${KAI_COMPRESSOR_GGUF}
+      KAI_COMPRESSOR_MIN_BYTES: ${KAI_COMPRESSOR_MIN_BYTES}
     command:
       - sh
       - -c

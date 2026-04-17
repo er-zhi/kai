@@ -1,8 +1,23 @@
 // Sanity wrapper — all real assertions live in tests/budget.test.ts which
 // imports directly from src/budget.ts (single source of truth for money caps).
 import assert from "node:assert/strict";
-import test from "node:test";
-import { isShortAnswerRequest, disallowedToolsFor, getMaxTurns } from "../src/budget";
+import test, { before } from "node:test";
+
+import { applyTestEnv } from "./test-env.ts";
+
+applyTestEnv();
+
+const budgetPromise = import("../dist/budget.js");
+let isShortAnswerRequest: typeof import("../dist/budget.js").isShortAnswerRequest;
+let disallowedToolsFor: typeof import("../dist/budget.js").disallowedToolsFor;
+let getMaxTurns: typeof import("../dist/budget.js").getMaxTurns;
+
+before(async () => {
+  const budget = await budgetPromise;
+  isShortAnswerRequest = budget.isShortAnswerRequest;
+  disallowedToolsFor = budget.disallowedToolsFor;
+  getMaxTurns = budget.getMaxTurns;
+});
 
 test("short-answer is detected on the phrases we've seen cost money", () => {
   assert.equal(isShortAnswerRequest("what is the single biggest risk? one sentence."), true);

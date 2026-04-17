@@ -5,11 +5,14 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { suggestTierWithLocalLLM } from "../src/router";
-import { ensureCacheSchema, lookupCachedReply, storeCachedReply } from "../src/cache";
-import { ensureQualitySchema, detectAndRecordFollowup, recordCommitVerification, qualityStats } from "../src/quality";
-import { buildCacheFriendlyPrompt, sharesStablePrefix } from "../src/prompt-order";
-import { resolveCompressionBudget } from "../src/compressor";
+import { applyTestEnv } from "./test-env.ts";
+import { suggestTierWithLocalLLM } from "../dist/router.js";
+import { ensureCacheSchema, lookupCachedReply, storeCachedReply } from "../dist/cache.js";
+import { ensureQualitySchema, detectAndRecordFollowup, recordCommitVerification, qualityStats } from "../dist/quality.js";
+import { buildCacheFriendlyPrompt, sharesStablePrefix } from "../dist/prompt-order.js";
+import { resolveCompressionBudget } from "../dist/compressor.js";
+
+applyTestEnv();
 
 const routerUrl = process.env.KAI_ROUTER_URL;
 if (!routerUrl) {
@@ -99,7 +102,7 @@ async function main() {
   ];
   for (const { task, hint } of tasks) {
     const tier = await suggestTierWithLocalLLM(task, {
-      url: routerUrl, model: process.env.KAI_ROUTER_MODEL ?? "LFM2-350M", timeoutMs: 5000,
+      url: routerUrl, model: process.env.KAI_ROUTER_MODEL!, timeoutMs: 5000,
     });
     console.log(`  task="${task.slice(0, 50)}..."  →  tier=${tier}  (expected ${hint})`);
     assert.ok(tier === null || ["haiku", "sonnet", "opus"].includes(tier));

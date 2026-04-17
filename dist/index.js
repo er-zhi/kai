@@ -17581,12 +17581,12 @@ var require_lib = __commonJS({
             throw new Error("Client has already been disposed.");
           }
           const parsedUrl = new URL(requestUrl);
-          let info2 = this._prepareRequest(verb, parsedUrl, headers);
+          let info3 = this._prepareRequest(verb, parsedUrl, headers);
           const maxTries = this._allowRetries && RetryableHttpVerbs.includes(verb) ? this._maxRetries + 1 : 1;
           let numTries = 0;
           let response;
           do {
-            response = yield this.requestRaw(info2, data);
+            response = yield this.requestRaw(info3, data);
             if (response && response.message && response.message.statusCode === HttpCodes.Unauthorized) {
               let authenticationHandler;
               for (const handler2 of this.handlers) {
@@ -17596,7 +17596,7 @@ var require_lib = __commonJS({
                 }
               }
               if (authenticationHandler) {
-                return authenticationHandler.handleAuthentication(this, info2, data);
+                return authenticationHandler.handleAuthentication(this, info3, data);
               } else {
                 return response;
               }
@@ -17619,8 +17619,8 @@ var require_lib = __commonJS({
                   }
                 }
               }
-              info2 = this._prepareRequest(verb, parsedRedirectUrl, headers);
-              response = yield this.requestRaw(info2, data);
+              info3 = this._prepareRequest(verb, parsedRedirectUrl, headers);
+              response = yield this.requestRaw(info3, data);
               redirectsRemaining--;
             }
             if (!response.message.statusCode || !HttpResponseRetryCodes.includes(response.message.statusCode)) {
@@ -17649,7 +17649,7 @@ var require_lib = __commonJS({
        * @param info
        * @param data
        */
-      requestRaw(info2, data) {
+      requestRaw(info3, data) {
         return __awaiter(this, void 0, void 0, function* () {
           return new Promise((resolve, reject) => {
             function callbackForResult(err, res) {
@@ -17661,7 +17661,7 @@ var require_lib = __commonJS({
                 resolve(res);
               }
             }
-            this.requestRawWithCallback(info2, data, callbackForResult);
+            this.requestRawWithCallback(info3, data, callbackForResult);
           });
         });
       }
@@ -17671,12 +17671,12 @@ var require_lib = __commonJS({
        * @param data
        * @param onResult
        */
-      requestRawWithCallback(info2, data, onResult) {
+      requestRawWithCallback(info3, data, onResult) {
         if (typeof data === "string") {
-          if (!info2.options.headers) {
-            info2.options.headers = {};
+          if (!info3.options.headers) {
+            info3.options.headers = {};
           }
-          info2.options.headers["Content-Length"] = Buffer.byteLength(data, "utf8");
+          info3.options.headers["Content-Length"] = Buffer.byteLength(data, "utf8");
         }
         let callbackCalled = false;
         function handleResult(err, res) {
@@ -17685,7 +17685,7 @@ var require_lib = __commonJS({
             onResult(err, res);
           }
         }
-        const req = info2.httpModule.request(info2.options, (msg) => {
+        const req = info3.httpModule.request(info3.options, (msg) => {
           const res = new HttpClientResponse(msg);
           handleResult(void 0, res);
         });
@@ -17697,7 +17697,7 @@ var require_lib = __commonJS({
           if (socket) {
             socket.end();
           }
-          handleResult(new Error(`Request timeout: ${info2.options.path}`));
+          handleResult(new Error(`Request timeout: ${info3.options.path}`));
         });
         req.on("error", function(err) {
           handleResult(err);
@@ -17733,27 +17733,27 @@ var require_lib = __commonJS({
         return this._getProxyAgentDispatcher(parsedUrl, proxyUrl);
       }
       _prepareRequest(method, requestUrl, headers) {
-        const info2 = {};
-        info2.parsedUrl = requestUrl;
-        const usingSsl = info2.parsedUrl.protocol === "https:";
-        info2.httpModule = usingSsl ? https : http;
+        const info3 = {};
+        info3.parsedUrl = requestUrl;
+        const usingSsl = info3.parsedUrl.protocol === "https:";
+        info3.httpModule = usingSsl ? https : http;
         const defaultPort = usingSsl ? 443 : 80;
-        info2.options = {};
-        info2.options.host = info2.parsedUrl.hostname;
-        info2.options.port = info2.parsedUrl.port ? parseInt(info2.parsedUrl.port) : defaultPort;
-        info2.options.path = (info2.parsedUrl.pathname || "") + (info2.parsedUrl.search || "");
-        info2.options.method = method;
-        info2.options.headers = this._mergeHeaders(headers);
+        info3.options = {};
+        info3.options.host = info3.parsedUrl.hostname;
+        info3.options.port = info3.parsedUrl.port ? parseInt(info3.parsedUrl.port) : defaultPort;
+        info3.options.path = (info3.parsedUrl.pathname || "") + (info3.parsedUrl.search || "");
+        info3.options.method = method;
+        info3.options.headers = this._mergeHeaders(headers);
         if (this.userAgent != null) {
-          info2.options.headers["user-agent"] = this.userAgent;
+          info3.options.headers["user-agent"] = this.userAgent;
         }
-        info2.options.agent = this._getAgent(info2.parsedUrl);
+        info3.options.agent = this._getAgent(info3.parsedUrl);
         if (this.handlers) {
           for (const handler2 of this.handlers) {
-            handler2.prepareRequest(info2.options);
+            handler2.prepareRequest(info3.options);
           }
         }
-        return info2;
+        return info3;
       }
       _mergeHeaders(headers) {
         if (this.requestOptions && this.requestOptions.headers) {
@@ -19735,18 +19735,18 @@ Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
       (0, command_1.issueCommand)("error", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
     exports2.error = error2;
-    function warning2(message, properties = {}) {
+    function warning4(message, properties = {}) {
       (0, command_1.issueCommand)("warning", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
-    exports2.warning = warning2;
+    exports2.warning = warning4;
     function notice(message, properties = {}) {
       (0, command_1.issueCommand)("notice", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
     exports2.notice = notice;
-    function info2(message) {
+    function info3(message) {
       process.stdout.write(message + os.EOL);
     }
-    exports2.info = info2;
+    exports2.info = info3;
     function startGroup(name) {
       (0, command_1.issue)("group", name);
     }
@@ -20736,7 +20736,7 @@ var require_dist_node7 = __commonJS({
     }
     function fetchWrapper2(requestOptions) {
       var _a, _b, _c, _d;
-      const log = requestOptions.request && requestOptions.request.log ? requestOptions.request.log : console;
+      const log2 = requestOptions.request && requestOptions.request.log ? requestOptions.request.log : console;
       const parseSuccessResponseBody = ((_a = requestOptions.request) == null ? void 0 : _a.parseSuccessResponseBody) !== false;
       if (isPlainObject3(requestOptions.body) || Array.isArray(requestOptions.body)) {
         requestOptions.body = JSON.stringify(requestOptions.body);
@@ -20771,7 +20771,7 @@ var require_dist_node7 = __commonJS({
         if ("deprecation" in headers) {
           const matches = headers.link && headers.link.match(/<([^<>]+)>; rel="deprecation"/);
           const deprecationLink = matches && matches.pop();
-          log.warn(
+          log2.warn(
             `[@octokit/request] "${requestOptions.method} ${requestOptions.url}" is deprecated. It is scheduled to be removed on ${headers.sunset}${deprecationLink ? `. See ${deprecationLink}` : ""}`
           );
         }
@@ -21162,7 +21162,7 @@ var require_dist_node11 = __commonJS({
     };
     var consoleWarn2 = console.warn.bind(console);
     var consoleError2 = console.error.bind(console);
-    function createLogger2(logger = {}) {
+    function createLogger3(logger = {}) {
       if (typeof logger.debug !== "function") {
         logger.debug = noop2;
       }
@@ -21250,7 +21250,7 @@ var require_dist_node11 = __commonJS({
         }
         this.request = import_request3.request.defaults(requestDefaults);
         this.graphql = (0, import_graphql2.withCustomRequest)(this.request).defaults(requestDefaults);
-        this.log = createLogger2(options.log);
+        this.log = createLogger3(options.log);
         this.hook = hook2;
         if (!options.authStrategy) {
           if (!options.auth) {
@@ -24028,7 +24028,7 @@ var require_fast_content_type_parse = __commonJS({
 });
 
 // src/index.ts
-var core = __toESM(require_core());
+var core3 = __toESM(require_core());
 var github = __toESM(require_github());
 
 // node_modules/universal-user-agent/index.js
@@ -24525,7 +24525,7 @@ async function fetchWrapper(requestOptions) {
       "fetch is not set. Please pass a fetch implementation as new Octokit({ request: { fetch }}). Learn more at https://github.com/octokit/octokit.js/#fetch-missing"
     );
   }
-  const log = requestOptions.request?.log || console;
+  const log2 = requestOptions.request?.log || console;
   const parseSuccessResponseBody = requestOptions.request?.parseSuccessResponseBody !== false;
   const body = isPlainObject2(requestOptions.body) || Array.isArray(requestOptions.body) ? JSON.stringify(requestOptions.body) : requestOptions.body;
   const requestHeaders = Object.fromEntries(
@@ -24583,7 +24583,7 @@ async function fetchWrapper(requestOptions) {
   if ("deprecation" in responseHeaders) {
     const matches = responseHeaders.link && responseHeaders.link.match(/<([^<>]+)>; rel="deprecation"/);
     const deprecationLink = matches && matches.pop();
-    log.warn(
+    log2.warn(
       `[@octokit/request] "${requestOptions.method} ${requestOptions.url}" is deprecated. It is scheduled to be removed on ${responseHeaders.sunset}${deprecationLink ? `. See ${deprecationLink}` : ""}`
     );
   }
@@ -27579,46 +27579,11 @@ var Octokit2 = Octokit.plugin(requestLog, legacyRestEndpointMethods, paginateRes
 );
 
 // src/index.ts
-var import_node_child_process = require("node:child_process");
-var import_node_sqlite = require("node:sqlite");
-var import_node_fs2 = require("node:fs");
+var import_node_child_process2 = require("node:child_process");
 
-// src/compressor.ts
-var DEFAULT_BUDGETS = {
-  haiku: 3e3,
-  sonnet: 1e4,
-  opus: 2e4
-};
-var MIN_PROMPT_TOKENS = 1200;
-function resolveNonNegativeInt(value, fallback) {
-  if (!Number.isFinite(value)) return fallback;
-  const normalized = Math.floor(value);
-  return normalized >= 0 ? normalized : fallback;
-}
-var LocalCompressorUnavailableError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "LocalCompressorUnavailableError";
-  }
-};
-function estimateTokens(text) {
-  return Math.ceil(text.length / 4);
-}
-function resolveCompressionBudget(tier, overrides) {
-  const key = tier.toLowerCase();
-  return overrides?.[key] ?? DEFAULT_BUDGETS[key] ?? DEFAULT_BUDGETS.haiku;
-}
-function splitPromptIntoChunks(prompt) {
-  const sections = prompt.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
-  if (sections.length === 0) {
-    return [];
-  }
-  const chunks = sections.map((text, idx) => ({
-    id: idx + 1,
-    text,
-    pinned: idx === 0 || idx === sections.length - 1 || /^(Task|Router|Kai,)/i.test(text)
-  }));
-  return chunks;
+// src/json.ts
+function isRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function extractJsonObject(raw) {
   const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -27651,18 +27616,59 @@ function extractJsonObject(raw) {
   }
   return null;
 }
+function parseJsonObject(raw) {
+  const candidate = extractJsonObject(raw) ?? raw.trim();
+  return JSON.parse(candidate);
+}
+
+// src/compressor.ts
+var DEFAULT_BUDGETS = {
+  haiku: 3e3,
+  sonnet: 1e4,
+  opus: 2e4
+};
+var MIN_PROMPT_TOKENS = 1200;
+function resolveNonNegativeInt(value, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  const normalized = Math.floor(value);
+  return normalized >= 0 ? normalized : fallback;
+}
+var LocalCompressorUnavailableError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LocalCompressorUnavailableError";
+  }
+};
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+function resolveCompressionBudget(tier2, overrides) {
+  const key = tier2.toLowerCase();
+  return overrides?.[key] ?? DEFAULT_BUDGETS[key] ?? DEFAULT_BUDGETS.haiku;
+}
+function splitPromptIntoChunks(prompt) {
+  const sections = prompt.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  if (sections.length === 0) {
+    return [];
+  }
+  const chunks = sections.map((text, idx) => ({
+    id: idx + 1,
+    text,
+    pinned: idx === 0 || idx === sections.length - 1 || /^(Task|Router|Kai,)/i.test(text)
+  }));
+  return chunks;
+}
 function parseCompressorPayload(raw, maxChunkId) {
   let parsed;
-  const jsonSource = extractJsonObject(raw) ?? raw.trim();
   try {
-    parsed = JSON.parse(jsonSource);
+    parsed = parseJsonObject(raw);
   } catch {
     if (process.env.KAI_DEBUG_COMPRESSOR === "1") {
       console.error("[kai-compressor] raw response (first 400 chars):", raw.slice(0, 400));
     }
     throw new LocalCompressorUnavailableError("local compressor returned invalid JSON");
   }
-  if (!parsed || typeof parsed !== "object") {
+  if (!isRecord(parsed)) {
     throw new LocalCompressorUnavailableError("local compressor returned non-object payload");
   }
   const shaped = parsed;
@@ -27743,16 +27749,18 @@ function mergeCompressedChunks(chunks, payload) {
   return parts.join("\n\n").trim();
 }
 async function compressPromptWithQwen(prompt, userMessage, modelTier, config) {
+  if (!config?.model) throw new LocalCompressorUnavailableError("KAI_COMPRESSOR_MODEL is required");
+  if (config.timeoutMs == null) throw new LocalCompressorUnavailableError("KAI_COMPRESSOR_TIMEOUT_MS is required");
   const started = Date.now();
   const rawTokens = estimateTokens(prompt);
   const queryTokens = estimateTokens(userMessage);
   const budget = resolveCompressionBudget(modelTier, config?.budgetByTier);
   const minPromptTokens = resolveNonNegativeInt(
-    config?.minPromptTokens ?? Number(process.env.KAI_COMPRESSOR_MIN_PROMPT_TOKENS || MIN_PROMPT_TOKENS),
+    config?.minPromptTokens,
     MIN_PROMPT_TOKENS
   );
   const minQueryTokens = resolveNonNegativeInt(
-    config?.minQueryTokens ?? Number(process.env.KAI_COMPRESSOR_MIN_QUERY_TOKENS || 0),
+    config?.minQueryTokens,
     0
   );
   if (config?.disabled || rawTokens < minPromptTokens || rawTokens <= budget || queryTokens < minQueryTokens) {
@@ -27771,52 +27779,47 @@ async function compressPromptWithQwen(prompt, userMessage, modelTier, config) {
   if (chunks.length === 0) {
     throw new LocalCompressorUnavailableError("compression required but prompt has no compressible chunks");
   }
-  const url = config?.url ?? process.env.KAI_COMPRESSOR_URL;
+  const url = config?.url;
   if (!url) {
     throw new LocalCompressorUnavailableError("compression required but missing KAI_COMPRESSOR_URL");
   }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config?.timeoutMs ?? Number(process.env.KAI_COMPRESSOR_TIMEOUT_MS || 1500));
-  try {
-    const response = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: config?.model ?? process.env.KAI_COMPRESSOR_MODEL ?? "LFM2-350M",
-        messages: compressorMessages(userMessage, chunks),
-        stream: false,
-        temperature: 0,
-        // Enough for ~200 integer ids + a few summaries; model stops at closing
-        // brace so unused tokens are free.
-        max_tokens: 1024,
-        response_format: COMPRESSOR_RESPONSE_FORMAT
-      }),
-      signal: controller.signal
-    });
-    if (!response.ok) {
-      throw new LocalCompressorUnavailableError(`local compressor returned HTTP ${response.status}`);
-    }
-    const body = await response.json();
-    const content = body.choices?.[0]?.message?.content ?? "";
-    const parsed = parseCompressorPayload(content, chunks.length);
-    const merged = mergeCompressedChunks(chunks, parsed);
-    if (!merged.trim()) {
-      throw new LocalCompressorUnavailableError("local compressor returned empty merged prompt");
-    }
-    const compressedTokens = estimateTokens(merged);
-    return {
-      prompt: compressedTokens >= rawTokens ? prompt : merged,
-      metrics: {
-        rawTokens,
-        compressedTokens: compressedTokens >= rawTokens ? rawTokens : compressedTokens,
-        cmpPct: compressedTokens >= rawTokens ? 0 : Math.max(0, Math.round((1 - compressedTokens / rawTokens) * 100)),
-        durationMs: Date.now() - started,
-        usedModel: true
-      }
-    };
-  } finally {
-    clearTimeout(timeout);
+  const signal = AbortSignal.timeout(config.timeoutMs);
+  const response = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: config.model,
+      messages: compressorMessages(userMessage, chunks),
+      stream: false,
+      temperature: 0,
+      // Enough for ~200 integer ids + a few summaries; model stops at closing
+      // brace so unused tokens are free.
+      max_tokens: 1024,
+      response_format: COMPRESSOR_RESPONSE_FORMAT
+    }),
+    signal
+  });
+  if (!response.ok) {
+    throw new LocalCompressorUnavailableError(`local compressor returned HTTP ${response.status}`);
   }
+  const body = await response.json();
+  const content = body.choices?.[0]?.message?.content ?? "";
+  const parsed = parseCompressorPayload(content, chunks.length);
+  const merged = mergeCompressedChunks(chunks, parsed);
+  if (!merged.trim()) {
+    throw new LocalCompressorUnavailableError("local compressor returned empty merged prompt");
+  }
+  const compressedTokens = estimateTokens(merged);
+  return {
+    prompt: compressedTokens >= rawTokens ? prompt : merged,
+    metrics: {
+      rawTokens,
+      compressedTokens: compressedTokens >= rawTokens ? rawTokens : compressedTokens,
+      cmpPct: compressedTokens >= rawTokens ? 0 : Math.max(0, Math.round((1 - compressedTokens / rawTokens) * 100)),
+      durationMs: Date.now() - started,
+      usedModel: true
+    }
+  };
 }
 
 // src/context-pack.ts
@@ -27872,7 +27875,7 @@ function createDynamicContextPack(input) {
       architecture: input.architectureContext ? architecturePath : null,
       history: historyPath
     },
-    optimizationChain: "RTK + Qwen3 context compression"
+    optimizationChain: "RTK + local context compression"
   };
   (0, import_node_fs.writeFileSync)(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
   (0, import_node_fs.writeFileSync)(historyPath, `${JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), event: "context-pack-created" })}
@@ -27888,22 +27891,22 @@ function appendContextHistory(historyPath, event, payload) {
 `, "utf-8");
 }
 function buildDynamicPromptFromManifest(userMessage, repoFullName, route, manifestPath, isArchitectureTask) {
-  const core2 = [
+  const core4 = [
     `Kai, AI code reviewer. Service: repos/${repoFullName.split("/").pop()}.`,
     `Task: ${userMessage}`,
     `Router: intent=${route.intent}; decision=${route.decision}; confidence=${route.confidence}; contextBudget=${route.maxContextTokens}; commitExpected=${route.commitExpected}`,
     `Dynamic context manifest: ${manifestPath}`,
-    "Optimization chain: RTK command rewrites + Qwen3 context compression.",
+    "Optimization chain: RTK command rewrites + local context compression.",
     "Read only the necessary context files from manifest (start with task + changed-files + pr-meta)."
   ];
   if (isArchitectureTask) {
-    core2.push("For architecture requests, read the architecture context file from manifest and focus on system/service relations.");
+    core4.push("For architecture requests, read the architecture context file from manifest and focus on system/service relations.");
   } else {
-    core2.push("For code tasks, inspect changed files and git diff first; then fetch extra context lazily.");
-    core2.push("Ignore bot/infrastructure files unless explicitly requested (.github/, .claude/, CLAUDE.md, workflow yml).");
+    core4.push("For code tasks, inspect changed files and git diff first; then fetch extra context lazily.");
+    core4.push("Ignore bot/infrastructure files unless explicitly requested (.github/, .claude/, CLAUDE.md, workflow yml).");
   }
-  core2.push("Keep response concise markdown with concrete file references and avoid repeating prior analysis.");
-  return core2.join("\n");
+  core4.push("Keep response concise markdown with concrete file references and avoid repeating prior analysis.");
+  return core4.join("\n");
 }
 
 // src/footer.ts
@@ -28012,7 +28015,6 @@ function routeEvent(rawMessage, modelTier) {
   };
 }
 var ROUTER_INTENTS = [
-  "ignore",
   "stop",
   "meta-template",
   "needs-input",
@@ -28029,9 +28031,6 @@ function decisionForIntent(intent) {
   switch (intent) {
     case "stop":
       return "stop";
-    case "ignore":
-    case "unsupported":
-      return "ignore";
     case "meta-template":
     case "spam-abuse":
       return "reply-template";
@@ -28050,39 +28049,10 @@ var LocalRouterUnavailableError = class extends Error {
     this.name = "LocalRouterUnavailableError";
   }
 };
-function extractJsonObject2(raw) {
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const source = fenced ? fenced[1] : raw;
-  const start = source.indexOf("{");
-  if (start < 0) return null;
-  let depth = 0, inStr = false, esc = false;
-  for (let i = start; i < source.length; i++) {
-    const ch = source[i];
-    if (esc) {
-      esc = false;
-      continue;
-    }
-    if (ch === "\\") {
-      esc = true;
-      continue;
-    }
-    if (ch === '"') {
-      inStr = !inStr;
-      continue;
-    }
-    if (inStr) continue;
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) return source.slice(start, i + 1);
-    }
-  }
-  return null;
-}
 function parseIntentOnly(raw) {
   try {
-    const candidate = extractJsonObject2(raw) ?? raw;
-    const parsed = JSON.parse(candidate);
+    const parsed = parseJsonObject(raw);
+    if (!isRecord(parsed) || typeof parsed.intent !== "string") return null;
     return ROUTER_INTENTS.includes(parsed.intent) ? parsed.intent : null;
   } catch {
     return null;
@@ -28098,14 +28068,15 @@ var TIER_RESPONSE_FORMAT = {
   }
 };
 async function suggestTierWithLocalLLM(message, options) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 2e3);
+  if (!options.model) throw new Error("KAI_ROUTER_MODEL is required");
+  if (options.timeoutMs == null) throw new Error("KAI_ROUTER_TIMEOUT_MS is required");
+  const signal = AbortSignal.timeout(options.timeoutMs);
   try {
     const res = await fetch(`${options.url.replace(/\/$/, "")}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: options.model ?? "LFM2-350M",
+        model: options.model,
         messages: [{
           role: "user",
           content: `Pick model tier for this task. haiku=simple Q/A, small edits. sonnet=multi-file refactor, code review, bug fix requiring reasoning. opus=architecture decisions, complex cross-service changes.
@@ -28117,28 +28088,26 @@ Return {"tier":"haiku"} or {"tier":"sonnet"} or {"tier":"opus"}.`
         max_tokens: 20,
         response_format: TIER_RESPONSE_FORMAT
       }),
-      signal: controller.signal
+      signal
     });
     if (!res.ok) return null;
     const body = await res.json();
     const content = body.choices?.[0]?.message?.content ?? "";
     try {
-      const candidate = extractJsonObject2(content) ?? content;
-      const parsed = JSON.parse(candidate);
+      const parsed = parseJsonObject(content);
+      if (!isRecord(parsed) || typeof parsed.tier !== "string") return null;
       return TIER_VALUES.includes(parsed.tier) ? parsed.tier : null;
     } catch {
       return null;
     }
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 function localRouterMessages(message) {
   return [{
     role: "user",
-    content: `Classify PR comment. Intents: simple-answer|review|write-fix|commit-write|job-candidate|meta-template|spam-abuse|needs-input|stop|alert|unsupported|ignore.
+    content: `Classify PR comment. Intents: simple-answer|review|write-fix|commit-write|job-candidate|meta-template|spam-abuse|needs-input|stop|alert|unsupported.
 Rules: "stop"\u2192stop; "who are you"/help\u2192meta-template; weather/music/jokes\u2192spam-abuse; empty/vague\u2192needs-input; "commit"/"push"\u2192commit-write; imperative add/fix/update\u2192write-fix; review/bug/risk\u2192review; question\u2192simple-answer.
 Return {"intent":"..."}.
 Comment: ${JSON.stringify(message)}`
@@ -28158,42 +28127,39 @@ var ROUTER_RESPONSE_FORMAT = {
   }
 };
 async function callRouterOnce(url, model, messages, timeoutMs) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages,
-        stream: false,
-        temperature: 0,
-        max_tokens: 40,
-        response_format: ROUTER_RESPONSE_FORMAT
-      }),
-      signal: controller.signal
-    });
-    if (!res.ok) throw new LocalRouterUnavailableError(`HTTP ${res.status}`);
-    const body = await res.json();
-    const content = body.choices?.[0]?.message?.content ?? "";
-    const intent = parseIntentOnly(content);
-    if (!intent) throw new LocalRouterUnavailableError("invalid intent payload");
-    return intent;
-  } finally {
-    clearTimeout(timeout);
-  }
+  const signal = AbortSignal.timeout(timeoutMs);
+  const res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: false,
+      temperature: 0,
+      max_tokens: 40,
+      response_format: ROUTER_RESPONSE_FORMAT
+    }),
+    signal
+  });
+  if (!res.ok) throw new LocalRouterUnavailableError(`HTTP ${res.status}`);
+  const body = await res.json();
+  const content = body.choices?.[0]?.message?.content ?? "";
+  const intent = parseIntentOnly(content);
+  if (!intent) throw new LocalRouterUnavailableError("invalid intent payload");
+  return intent;
 }
 async function routeEventWithLocalLLM(rawMessage, modelTier, options) {
   const rules = routeEvent(rawMessage, modelTier);
   if (rules.decision !== "call-model") return rules;
   const url = options?.url ?? process.env.KAI_ROUTER_URL;
   if (!url) {
-    if (options?.allowRulesOnly) return rules;
     throw new LocalRouterUnavailableError("local router URL is required before paid model calls");
   }
-  const model = options?.model ?? process.env.KAI_ROUTER_MODEL ?? "LFM2-350M";
-  const timeoutMs = options?.timeoutMs ?? 3e3;
+  if (!options) throw new LocalRouterUnavailableError("router options are required");
+  const model = options.model;
+  if (!model) throw new LocalRouterUnavailableError("KAI_ROUTER_MODEL is required");
+  if (options.timeoutMs == null) throw new Error("router timeout is required");
+  const timeoutMs = options.timeoutMs;
   const messages = localRouterMessages(rules.normalizedMessage);
   const started = Date.now();
   const delaysMs = [0, 400, 1200];
@@ -28270,6 +28236,224 @@ function storeCachedReply(db, prompt, repo, prNumber, sender, reply, costUsd) {
   ).run(hash, repo, prNumber, sender, reply, costUsd);
 }
 
+// src/file-focus.ts
+var FILE_FOCUS_RESPONSE_FORMAT = {
+  type: "json_object",
+  schema: {
+    type: "object",
+    properties: {
+      files: { type: "array", items: { type: "string" } }
+    },
+    required: ["files"]
+  }
+};
+async function selectRelevantFiles(userMessage, filesList, config) {
+  if (config.maxFiles == null) throw new Error("file-focus maxFiles is required");
+  if (config.timeoutMs == null) throw new Error("file-focus timeoutMs is required");
+  if (!config.model) throw new Error("KAI_FILE_FOCUS_MODEL is required");
+  const maxFiles = config.maxFiles;
+  const files = filesList.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
+  if (files.length <= maxFiles) return files;
+  try {
+    const response = await fetch(`${config.url.replace(/\/$/, "")}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [{
+          role: "user",
+          content: `Pick up to ${maxFiles} most relevant file paths for this task.
+Task: ${JSON.stringify(userMessage)}
+Files:
+${files.join("\n")}
+Return {"files":["path","..."]} with exact paths from the list.`
+        }],
+        stream: false,
+        temperature: 0,
+        max_tokens: 256,
+        response_format: FILE_FOCUS_RESPONSE_FORMAT
+      }),
+      signal: AbortSignal.timeout(config.timeoutMs)
+    });
+    if (!response.ok) return [];
+    const body = await response.json();
+    const content = body.choices?.[0]?.message?.content ?? "";
+    let parsed;
+    try {
+      parsed = parseJsonObject(content);
+    } catch {
+      return [];
+    }
+    if (!isRecord(parsed) || !Array.isArray(parsed.files)) return [];
+    const known = new Set(files);
+    return parsed.files.filter((p) => typeof p === "string" && known.has(p)).slice(0, maxFiles);
+  } catch {
+    return [];
+  }
+}
+
+// src/prompt-order.ts
+function buildCacheFriendlyPrompt(sections) {
+  const stable = sections.stable.map((s) => s.trim()).filter(Boolean);
+  const dynamic = sections.dynamic.map((s) => s.trim()).filter(Boolean);
+  const parts = [];
+  if (stable.length) {
+    parts.push("=== STABLE CONTEXT (cache prefix) ===");
+    parts.push(...stable);
+  }
+  if (dynamic.length) {
+    parts.push("=== TASK ===");
+    parts.push(...dynamic);
+  }
+  return parts.join("\n\n").trim();
+}
+
+// src/config.ts
+function env(name) {
+  const value = process.env[name];
+  if (!value || !value.trim()) throw new Error(`Missing required env: ${name}`);
+  return value.trim();
+}
+function optEnv(name) {
+  const value = process.env[name];
+  return value && value.trim() ? value.trim() : void 0;
+}
+function num(name, min, max) {
+  const raw = env(name);
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`Invalid number for ${name}: ${raw}`);
+  if (value < min || value > max) throw new Error(`${name} out of range: ${value} not in [${min}, ${max}]`);
+  return value;
+}
+function bool(name) {
+  const raw = env(name).toLowerCase();
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`Invalid boolean for ${name}: ${raw}`);
+}
+function tier(name) {
+  const raw = env(name).toLowerCase();
+  if (raw === "haiku" || raw === "sonnet" || raw === "opus") return raw;
+  throw new Error(`Invalid tier for ${name}: ${raw}`);
+}
+function logLevel(name) {
+  const raw = env(name).toLowerCase();
+  if (raw === "debug" || raw === "info" || raw === "warn" || raw === "error") return raw;
+  throw new Error(`Invalid log level for ${name}: ${raw}`);
+}
+function loadConfig() {
+  const runnerAllowNoToken = bool("KAI_RUNNER_ALLOW_NO_TOKEN");
+  const runnerToken = optEnv("RUNNER_TOKEN");
+  if (!runnerAllowNoToken && !runnerToken) {
+    throw new Error("RUNNER_TOKEN is required unless KAI_RUNNER_ALLOW_NO_TOKEN=true");
+  }
+  return {
+    auditDbPath: env("KAI_AUDIT_DB"),
+    rateLimitSenderPerHour: num("KAI_RATE_LIMIT_SENDER_PER_HOUR", 1, 1e4),
+    rateLimitRepoPerHour: num("KAI_RATE_LIMIT_REPO_PER_HOUR", 1, 1e5),
+    rateLimitSenderCostPerDay: num("KAI_RATE_LIMIT_SENDER_COST_PER_DAY", 0, 1e6),
+    allowlistDefaultTier: tier("KAI_ALLOWLIST_DEFAULT_TIER"),
+    maxCostUsdHaiku: num("KAI_MAX_COST_USD_HAIKU", 0, 1e3),
+    maxCostUsdSonnet: num("KAI_MAX_COST_USD_SONNET", 0, 1e3),
+    maxCostUsdOpus: num("KAI_MAX_COST_USD_OPUS", 0, 1e3),
+    maxPromptTokens: num("KAI_MAX_PROMPT_TOKENS", 1, 1e6),
+    shortAnswerMaxInputTokens: num("KAI_SHORT_ANSWER_MAX_INPUT_TOKENS", 1, 1e6),
+    routerUrl: env("KAI_ROUTER_URL"),
+    routerModel: env("KAI_ROUTER_MODEL"),
+    compressorUrl: env("KAI_COMPRESSOR_URL"),
+    compressorModel: env("KAI_COMPRESSOR_MODEL"),
+    compressorTimeoutMs: num("KAI_COMPRESSOR_TIMEOUT_MS", 1, 12e4),
+    compressorMinQueryTokens: num("KAI_COMPRESSOR_MIN_QUERY_TOKENS", 0, 1e6),
+    compressorMinPromptTokens: num("KAI_COMPRESSOR_MIN_PROMPT_TOKENS", 0, 1e6),
+    compressorBudgetHaiku: num("KAI_COMPRESSOR_BUDGET_HAIKU", 0, 1e6),
+    compressorBudgetSonnet: num("KAI_COMPRESSOR_BUDGET_SONNET", 0, 1e6),
+    compressorBudgetOpus: num("KAI_COMPRESSOR_BUDGET_OPUS", 0, 1e6),
+    routerHfRepo: env("KAI_ROUTER_HF_REPO"),
+    routerGguf: env("KAI_ROUTER_GGUF"),
+    routerMinBytes: num("KAI_ROUTER_MIN_BYTES", 1, 1e10),
+    compressorHfRepo: env("KAI_COMPRESSOR_HF_REPO"),
+    compressorGguf: env("KAI_COMPRESSOR_GGUF"),
+    compressorMinBytes: num("KAI_COMPRESSOR_MIN_BYTES", 1, 1e10),
+    runnerAllowNoToken,
+    runnerToken,
+    routerGitContext: env("KAI_ROUTER_GIT_CONTEXT"),
+    fileFocusModel: env("KAI_FILE_FOCUS_MODEL"),
+    routerTimeoutMs: num("KAI_ROUTER_TIMEOUT_MS", 1, 12e4),
+    logLevel: logLevel("KAI_LOG_LEVEL")
+  };
+}
+
+// src/log.ts
+var MAX_FIELD_LENGTH = 400;
+var MAX_MESSAGE_LENGTH = 1200;
+function truncate(value, limit = MAX_FIELD_LENGTH) {
+  if (typeof value === "string") {
+    return value.length > limit ? `${value.slice(0, limit)}\u2026` : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => truncate(item, limit));
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = truncate(item, limit);
+    }
+    return out;
+  }
+  return value;
+}
+function encode(level, component, message, meta) {
+  const payload = {
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    level,
+    component,
+    message: message.length > MAX_MESSAGE_LENGTH ? `${message.slice(0, MAX_MESSAGE_LENGTH)}\u2026` : message,
+    ...meta ? { meta: truncate(meta) } : {}
+  };
+  return JSON.stringify(payload);
+}
+function errorMeta(error2) {
+  if (error2 instanceof Error) {
+    return {
+      errorName: error2.name,
+      errorMessage: error2.message,
+      errorStack: error2.stack
+    };
+  }
+  return { errorValue: String(error2) };
+}
+function createLogger2(component, level) {
+  const enabled = {
+    debug: level === "debug",
+    info: level === "debug" || level === "info",
+    warn: true,
+    error: true
+  };
+  const write = (lvl, message, meta) => {
+    if (!enabled[lvl]) return;
+    const line = encode(lvl, component, message, meta);
+    if (lvl === "error") {
+      console.error(line);
+    } else {
+      console.log(line);
+    }
+  };
+  return {
+    debug: (message, meta) => write("debug", message, meta),
+    info: (message, meta) => write("info", message, meta),
+    warn: (message, meta) => write("warn", message, meta),
+    error: (message, meta) => write("error", message, meta),
+    fatal: (message, meta) => {
+      write("error", message, meta);
+      throw new Error(message);
+    }
+  };
+}
+
+// src/audit.ts
+var core = __toESM(require_core());
+var import_node_sqlite = require("node:sqlite");
+
 // src/quality.ts
 function ensureQualitySchema(db) {
   db.exec(`
@@ -28312,144 +28496,20 @@ function detectAndRecordFollowup(db, sender, repo, prNumber) {
   return { previousAuditId: row.id };
 }
 
-// src/file-focus.ts
-var FILE_FOCUS_RESPONSE_FORMAT = {
-  type: "json_object",
-  schema: {
-    type: "object",
-    properties: {
-      files: { type: "array", items: { type: "string" } }
-    },
-    required: ["files"]
+// src/audit.ts
+var TIER_RANK = { haiku: 1, sonnet: 2, opus: 3 };
+function envNumber(name, fallback) {
+  const raw = process.env[name];
+  if (!raw || !raw.trim()) {
+    if (fallback == null) throw new Error(`Missing required env: ${name}`);
+    return fallback;
   }
-};
-async function selectRelevantFiles(userMessage, filesList, config) {
-  const maxFiles = config.maxFiles ?? 5;
-  const files = filesList.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
-  if (files.length <= maxFiles) return files;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? 2e3);
-  try {
-    const response = await fetch(`${config.url.replace(/\/$/, "")}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: config.model ?? "LFM2-350M",
-        messages: [{
-          role: "user",
-          content: `Pick up to ${maxFiles} most relevant file paths for this task.
-Task: ${JSON.stringify(userMessage)}
-Files:
-${files.join("\n")}
-Return {"files":["path","..."]} with exact paths from the list.`
-        }],
-        stream: false,
-        temperature: 0,
-        max_tokens: 256,
-        response_format: FILE_FOCUS_RESPONSE_FORMAT
-      }),
-      signal: controller.signal
-    });
-    if (!response.ok) return [];
-    const body = await response.json();
-    const content = body.choices?.[0]?.message?.content ?? "";
-    const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    const jsonStart = (fenced ? fenced[1] : content).indexOf("{");
-    const rawJson = jsonStart >= 0 ? (fenced ? fenced[1] : content).slice(jsonStart) : content;
-    let parsed;
-    try {
-      parsed = JSON.parse(rawJson.trim());
-    } catch {
-      return [];
-    }
-    if (!parsed.files || !Array.isArray(parsed.files)) return [];
-    const known = new Set(files);
-    return parsed.files.filter((p) => typeof p === "string" && known.has(p)).slice(0, maxFiles);
-  } catch {
-    return [];
-  } finally {
-    clearTimeout(timeout);
-  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`Invalid number for ${name}: ${raw}`);
+  return value;
 }
-
-// src/prompt-order.ts
-function buildCacheFriendlyPrompt(sections) {
-  const stable = sections.stable.map((s) => s.trim()).filter(Boolean);
-  const dynamic = sections.dynamic.map((s) => s.trim()).filter(Boolean);
-  const parts = [];
-  if (stable.length) {
-    parts.push("=== STABLE CONTEXT (cache prefix) ===");
-    parts.push(...stable);
-  }
-  if (dynamic.length) {
-    parts.push("=== TASK ===");
-    parts.push(...dynamic);
-  }
-  return parts.join("\n\n").trim();
-}
-
-// src/budget.ts
-var PRICING_USD_PER_MILLION = {
-  // Claude Haiku 4.5 (ballpark — tune as Anthropic publishes updates).
-  haiku: { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
-  sonnet: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
-  opus: { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 }
-};
-var MAX_COST_USD_BY_TIER = {
-  haiku: Number(process.env.KAI_MAX_COST_USD_HAIKU || 0.05),
-  sonnet: Number(process.env.KAI_MAX_COST_USD_SONNET || 0.5),
-  opus: Number(process.env.KAI_MAX_COST_USD_OPUS || 2)
-};
-function isShortAnswerRequest(message) {
-  return /\b(one\s+(?:sentence|line|word|paragraph)|1\s+sentence|single\s+sentence|briefly|tl;?\s*dr|in\s+(?:a\s+)?(?:word|sentence|line)|short\s+answer|yes\/no|quick(?:ly)?)\b/i.test(message);
-}
-function getMaxTurns(message, modelTier) {
-  if (modelTier === "opus") return 25;
-  if (modelTier === "sonnet") return 20;
-  if (/fix|commit|push|apply|create|patch|refactor|document/i.test(message)) return 20;
-  if (isShortAnswerRequest(message)) return 2;
-  const isTrulySimple = message.length < 50 && /^(top|list|one-liner|quick|summarize|how many|which file)/i.test(message);
-  return isTrulySimple ? 8 : 12;
-}
-function disallowedToolsFor(userMessage) {
-  if (!isShortAnswerRequest(userMessage)) return [];
-  return ["Read", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"];
-}
-var MAX_PROMPT_TOKENS = Number(process.env.KAI_MAX_PROMPT_TOKENS || 5e4);
-var SHORT_ANSWER_MAX_INPUT_TOKENS = Number(process.env.KAI_SHORT_ANSWER_MAX_INPUT_TOKENS || 6e3);
-function preflightBudget(userMessage, promptTokens, tier) {
-  if (promptTokens > MAX_PROMPT_TOKENS) {
-    return { allowed: false, reason: `prompt ${promptTokens} tokens > hard ceiling ${MAX_PROMPT_TOKENS}` };
-  }
-  if (isShortAnswerRequest(userMessage) && promptTokens > SHORT_ANSWER_MAX_INPUT_TOKENS) {
-    return {
-      allowed: false,
-      reason: `short-answer prompt ${promptTokens} tokens > cap ${SHORT_ANSWER_MAX_INPUT_TOKENS}`
-    };
-  }
-  const maxTurns = getMaxTurns(userMessage, tier);
-  const price = PRICING_USD_PER_MILLION[tier] ?? PRICING_USD_PER_MILLION.haiku;
-  const worstInputCost = maxTurns * promptTokens * price.input / 1e6;
-  const worstOutputCost = maxTurns * 1e3 * price.output / 1e6;
-  const worstTotal = worstInputCost + worstOutputCost;
-  const cap = MAX_COST_USD_BY_TIER[tier] ?? MAX_COST_USD_BY_TIER.haiku;
-  if (worstTotal > cap) {
-    return {
-      allowed: false,
-      reason: `worst-case projection $${worstTotal.toFixed(4)} > tier cap $${cap} (${maxTurns}t \xD7 ${promptTokens}tok)`
-    };
-  }
-  return { allowed: true };
-}
-
-// src/index.ts
-var AUDIT_DB_PATH = process.env.KAI_AUDIT_DB || "/home/kai/data/kai-audit.db";
-function initAuditDb() {
-  try {
-    (0, import_node_fs2.mkdirSync)("/home/kai/data", { recursive: true });
-  } catch {
-  }
-  const db = new import_node_sqlite.DatabaseSync(AUDIT_DB_PATH);
+function initAuditDb(dbPath) {
+  const db = new import_node_sqlite.DatabaseSync(dbPath);
   db.exec(`
     CREATE TABLE IF NOT EXISTS audit_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28535,6 +28595,25 @@ function initAuditDb() {
   ensureQualitySchema(db);
   return db;
 }
+function seedModelAllowlist(db) {
+  const raw = process.env.KAI_MODEL_ALLOWLIST?.trim();
+  if (!raw) return;
+  const stmt = db.prepare(
+    `INSERT OR REPLACE INTO model_allowlist (sender, max_tier, added_by, note)
+     VALUES (?, ?, 'env-seed', 'seeded from KAI_MODEL_ALLOWLIST')`
+  );
+  for (const entry of raw.split(",")) {
+    const [senderRaw, tierRaw] = entry.split(":").map((s) => s?.trim());
+    if (!senderRaw || !tierRaw) continue;
+    const tier2 = tierRaw.toLowerCase();
+    if (tier2 !== "haiku" && tier2 !== "sonnet" && tier2 !== "opus") continue;
+    try {
+      stmt.run(senderRaw, tier2);
+    } catch (e) {
+      core.warning(`Allowlist seed failed for ${senderRaw}: ${e}`);
+    }
+  }
+}
 function latestAuditId(db, sender, repoFull, prNumber) {
   try {
     const row = db.prepare(
@@ -28546,70 +28625,47 @@ function latestAuditId(db, sender, repoFull, prNumber) {
     return null;
   }
 }
-var RATE_LIMIT_SENDER_PER_HOUR = Number(process.env.KAI_RATE_LIMIT_SENDER_PER_HOUR || 20);
-var RATE_LIMIT_REPO_PER_HOUR = Number(process.env.KAI_RATE_LIMIT_REPO_PER_HOUR || 120);
-var RATE_LIMIT_SENDER_COST_PER_DAY = Number(process.env.KAI_RATE_LIMIT_SENDER_COST_PER_DAY || 20);
 function checkRateLimit(db, sender, repoFull) {
-  if (!db) return { allowed: true };
+  const senderPerHour = envNumber("KAI_RATE_LIMIT_SENDER_PER_HOUR");
+  const repoPerHour = envNumber("KAI_RATE_LIMIT_REPO_PER_HOUR");
+  const senderCostPerDay = envNumber("KAI_RATE_LIMIT_SENDER_COST_PER_DAY");
+  if (!db) return { allowed: false, reason: "rate-limit database unavailable" };
   try {
     const hourly = db.prepare(
       `SELECT COUNT(*) AS n FROM rate_limits WHERE sender = ? AND timestamp >= datetime('now', '-1 hour')`
     ).get(sender);
-    if (hourly.n >= RATE_LIMIT_SENDER_PER_HOUR) {
-      return { allowed: false, reason: `sender rate limit: ${hourly.n}/${RATE_LIMIT_SENDER_PER_HOUR} calls in last hour` };
+    if (hourly.n >= senderPerHour) {
+      return { allowed: false, reason: `sender rate limit: ${hourly.n}/${senderPerHour} calls in last hour` };
     }
     const repoHourly = db.prepare(
       `SELECT COUNT(*) AS n FROM rate_limits WHERE repo = ? AND timestamp >= datetime('now', '-1 hour')`
     ).get(repoFull);
-    if (repoHourly.n >= RATE_LIMIT_REPO_PER_HOUR) {
-      return { allowed: false, reason: `repo rate limit: ${repoHourly.n}/${RATE_LIMIT_REPO_PER_HOUR} calls in last hour` };
+    if (repoHourly.n >= repoPerHour) {
+      return { allowed: false, reason: `repo rate limit: ${repoHourly.n}/${repoPerHour} calls in last hour` };
     }
     const dailyCost = db.prepare(
       `SELECT COALESCE(SUM(cost_usd), 0) AS c FROM rate_limits WHERE sender = ? AND timestamp >= datetime('now', '-1 day')`
     ).get(sender);
-    if (dailyCost.c >= RATE_LIMIT_SENDER_COST_PER_DAY) {
-      return { allowed: false, reason: `sender daily budget: $${dailyCost.c.toFixed(2)}/$${RATE_LIMIT_SENDER_COST_PER_DAY}` };
+    if (dailyCost.c >= senderCostPerDay) {
+      return { allowed: false, reason: `sender daily budget: $${dailyCost.c.toFixed(2)}/$${senderCostPerDay}` };
     }
     return { allowed: true };
   } catch (e) {
     core.warning(`Rate-limit check failed: ${e}`);
-    return { allowed: true };
+    return { allowed: false, reason: "rate-limit check failed" };
   }
 }
-function recordRateLimit(db, sender, repoFull, tier, costUsd) {
+function recordRateLimit(db, sender, repoFull, tier2, costUsd) {
   if (!db) return;
   try {
-    db.prepare(`INSERT INTO rate_limits (sender, repo, tier, cost_usd) VALUES (?, ?, ?, ?)`).run(sender, repoFull, tier, costUsd);
+    db.prepare(`INSERT INTO rate_limits (sender, repo, tier, cost_usd) VALUES (?, ?, ?, ?)`).run(sender, repoFull, tier2, costUsd);
   } catch (e) {
     core.warning(`Rate-limit record failed: ${e}`);
   }
 }
-function seedModelAllowlist(db) {
-  const raw = process.env.KAI_MODEL_ALLOWLIST?.trim();
-  if (!raw) return;
-  const stmt = db.prepare(
-    `INSERT OR REPLACE INTO model_allowlist (sender, max_tier, added_by, note)
-     VALUES (?, ?, 'env-seed', 'seeded from KAI_MODEL_ALLOWLIST')`
-  );
-  for (const entry of raw.split(",")) {
-    const [senderRaw, tierRaw] = entry.split(":").map((s) => s?.trim());
-    if (!senderRaw || !tierRaw) continue;
-    const tier = tierRaw.toLowerCase();
-    if (tier !== "haiku" && tier !== "sonnet" && tier !== "opus") continue;
-    try {
-      stmt.run(senderRaw, tier);
-    } catch (e) {
-      core.warning(`Allowlist seed failed for ${senderRaw}: ${e}`);
-    }
-  }
-}
-var TIER_RANK = { haiku: 1, sonnet: 2, opus: 3 };
-function defaultAllowedTier() {
-  const env = (process.env.KAI_ALLOWLIST_DEFAULT_TIER || "haiku").toLowerCase();
-  return TIER_RANK[env] ? env : "haiku";
-}
 function resolveAllowedModel(db, sender, requestedTier) {
-  const fallbackTier = defaultAllowedTier();
+  const fallbackTier = (process.env.KAI_ALLOWLIST_DEFAULT_TIER ?? "").toLowerCase();
+  if (!fallbackTier) throw new Error("Missing required env: KAI_ALLOWLIST_DEFAULT_TIER");
   const requested = requestedTier.toLowerCase();
   if (!db) {
     const allowed2 = TIER_RANK[requested] <= TIER_RANK[fallbackTier] ? requested : fallbackTier;
@@ -28734,6 +28790,298 @@ function logContextOptimization(db, data) {
     core.warning(`Context optimization log failed: ${e}`);
   }
 }
+function detectAndRecordFollowupAudit(db, sender, repo, prNumber) {
+  const id = detectAndRecordFollowup(db, sender, repo, prNumber).previousAuditId;
+  return { previousAuditId: id };
+}
+function recordAuditQualitySignals(db, auditId, commitVerified) {
+  recordCommitVerification(db, auditId, commitVerified);
+}
+function recordAuditCacheHit(db, auditId) {
+  recordCacheHit(db, auditId);
+}
+
+// src/runner.ts
+var core2 = __toESM(require_core());
+var import_node_child_process = require("node:child_process");
+var import_node_fs2 = require("node:fs");
+
+// src/rtk.ts
+function parseRtkSavings(raw) {
+  const text = raw.trim();
+  if (!text) return "";
+  const percentMatches = [
+    text.match(/\((\d+(?:\.\d+)?)%\)/),
+    text.match(/(?:savings?|saved|gain|improvement|reduction)\D+(\d+(?:\.\d+)?)%/i),
+    text.match(/\b(\d+(?:\.\d+)?)%\b/)
+  ].filter((m) => !!m);
+  if (percentMatches.length) return `${percentMatches[0][1]}%`;
+  const decimalMatch = text.match(/\b0\.(\d+)\b/);
+  if (decimalMatch) {
+    const pct = Number(`0.${decimalMatch[1]}`) * 100;
+    if (Number.isFinite(pct) && pct > 0) return `${pct.toFixed(1)}%`;
+  }
+  return "";
+}
+
+// src/runner.ts
+function isRecord2(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function parseCliJsonPayload(output) {
+  const json = JSON.parse(output);
+  if (!isRecord2(json)) throw new Error("CLI payload is not an object");
+  const payload = {};
+  if (typeof json.result === "string") payload.result = json.result;
+  if (typeof json.content === "string") payload.content = json.content;
+  if (typeof json.is_error === "boolean") payload.is_error = json.is_error;
+  if (typeof json.subtype === "string") payload.subtype = json.subtype;
+  if (typeof json.num_turns === "number") payload.num_turns = json.num_turns;
+  if (isRecord2(json.usage)) {
+    payload.usage = {};
+    if (typeof json.usage.cache_read_input_tokens === "number") payload.usage.cache_read_input_tokens = json.usage.cache_read_input_tokens;
+    if (typeof json.usage.cache_creation_input_tokens === "number") payload.usage.cache_creation_input_tokens = json.usage.cache_creation_input_tokens;
+    if (typeof json.usage.input_tokens === "number") payload.usage.input_tokens = json.usage.input_tokens;
+    if (typeof json.usage.output_tokens === "number") payload.usage.output_tokens = json.usage.output_tokens;
+  }
+  if (typeof json.total_cost_usd === "number") payload.total_cost_usd = json.total_cost_usd;
+  if (typeof json.cost_usd === "number") payload.cost_usd = json.cost_usd;
+  return payload;
+}
+var HEARTBEAT_INTERVAL_MS = 15e3;
+var CLI_TIMEOUT_MS = 3e5;
+var LOADING_GIF = "https://emojis.slackmojis.com/emojis/images/1643514453/4358/loading.gif?1643514453";
+var PHASES = [
+  "Reading PR context",
+  "Loading conversation history",
+  "Analyzing code changes",
+  "Running security checks",
+  "Inspecting files",
+  "Preparing response"
+];
+function spinnerFrame(_tick, elapsed, _modelLabel) {
+  const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
+  return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...
+
+_Delete this comment to cancel._`;
+}
+function isRootUser() {
+  return process.getuid?.() === 0;
+}
+function requireRTKHookConfigured(logger = createLogger2("kai-runner", "info")) {
+  if (process.env.KAI_RTK_HOOK_SKIP_CHECK === "true") {
+    logger.warn("KAI_RTK_HOOK_SKIP_CHECK=true \u2014 skipping RTK hook verification");
+    return;
+  }
+  const candidates = [
+    process.env.KAI_CLAUDE_SETTINGS_PATH,
+    `${process.env.HOME || "/home/kai"}/.claude/settings.json`,
+    "/home/kai/.claude/settings.json",
+    "/root/.claude/settings.json"
+  ].filter((p) => !!p);
+  for (const path of candidates) {
+    if (!(0, import_node_fs2.existsSync)(path)) continue;
+    const content = (0, import_node_fs2.readFileSync)(path, "utf-8");
+    if (/\brtk\b/i.test(content)) return;
+  }
+  throw new Error("RTK hook not configured in Claude settings.json");
+}
+function requireRTK() {
+  const ver = (0, import_node_child_process.execSync)("rtk --version", { stdio: "pipe", timeout: 5e3, encoding: "utf-8" }).trim();
+  const help = (0, import_node_child_process.execSync)("rtk --help", { stdio: "pipe", timeout: 5e3, encoding: "utf-8" });
+  if (!help.includes("rewrite")) {
+    throw new Error("Wrong rtk binary (missing 'rewrite' command). Need rtk-ai/rtk, not crates.io rtk.");
+  }
+  requireRTKHookConfigured();
+  return ver;
+}
+function requireClaudeCLI() {
+  (0, import_node_child_process.execSync)("claude --version", { stdio: "pipe", timeout: 5e3 });
+}
+function parseModelFromMessage(message) {
+  for (const tier2 of ["opus", "sonnet", "haiku"]) {
+    const pattern = new RegExp(`use\\s+${tier2}`, "i");
+    if (pattern.test(message)) {
+      return { model: tier2, cleanMessage: message.replace(pattern, "").trim() || "review this PR" };
+    }
+  }
+  return { model: "haiku", cleanMessage: message };
+}
+function buildHeartbeatFrame(tick, elapsed, modelLabel) {
+  return spinnerFrame(tick, elapsed, modelLabel);
+}
+async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, heartbeat, db, runId, modelTier, disallowedTools = []) {
+  const isRoot = isRootUser();
+  sessionUpdate(db, runId, "cli-attempt-1", { attempt: 1 });
+  try {
+    const result = await runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, heartbeat, db, runId, disallowedTools);
+    sessionUpdate(db, runId, "completed", { status: "completed" });
+    return result;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message.slice(0, 200) : String(e);
+    sessionUpdate(db, runId, "failed-attempt-1", { error: msg });
+    sessionUpdate(db, runId, "failed", { status: "failed", error: msg });
+    throw e;
+  }
+}
+async function runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, hb, db, runId, disallowedTools = []) {
+  return new Promise((resolve, reject) => {
+    const claudeArgs = ["-p", "--dangerously-skip-permissions", "--output-format", "json", "--max-turns", String(maxTurns), "--model", modelId];
+    if (disallowedTools.length) claudeArgs.push("--disallowed-tools", disallowedTools.join(","));
+    const startTime = Date.now();
+    let output = "";
+    let settled = false;
+    const child = isRoot ? (0, import_node_child_process.spawn)("su", ["-s", "/bin/bash", "kai", "-c", `ANTHROPIC_API_KEY=${apiKey} claude ${claudeArgs.join(" ")}`], { env: { ...process.env, ANTHROPIC_API_KEY: apiKey } }) : (0, import_node_child_process.spawn)("claude", claudeArgs, { env: { ...process.env, ANTHROPIC_API_KEY: apiKey } });
+    child.stdin?.write(prompt);
+    child.stdin?.end();
+    child.stdout?.on("data", (data) => {
+      output += data.toString();
+    });
+    child.stderr?.on("data", (data) => {
+      core2.info(`CLI stderr: ${data.toString().slice(0, 200)}`);
+    });
+    const heartbeatTimer = setInterval(async () => {
+      const elapsed = Math.round((Date.now() - startTime) / 1e3);
+      sessionUpdate(db, runId, "running");
+      try {
+        await hb.octokit.issues.getComment({ owner: hb.owner, repo: hb.repo, comment_id: hb.replyCommentId });
+      } catch {
+        child.kill("SIGTERM");
+        clearInterval(heartbeatTimer);
+        if (!settled) {
+          settled = true;
+          reject(new Error("Cancelled by user"));
+        }
+        return;
+      }
+      await safeUpdate(hb.octokit, hb.owner, hb.repo, hb.replyCommentId, buildHeartbeatFrame(0, elapsed, hb.modelLabel));
+    }, HEARTBEAT_INTERVAL_MS);
+    const timeoutTimer = setTimeout(() => {
+      core2.warning(`CLI timeout after ${CLI_TIMEOUT_MS / 1e3}s`);
+      child.kill("SIGTERM");
+    }, CLI_TIMEOUT_MS);
+    child.on("close", (code) => {
+      clearInterval(heartbeatTimer);
+      clearTimeout(timeoutTimer);
+      if (settled) return;
+      if (code !== 0 && !output) {
+        settled = true;
+        reject(new Error(`CLI exited with code ${code}`));
+        return;
+      }
+      try {
+        const json = parseCliJsonPayload(output);
+        let rtkSavings = "";
+        try {
+          const gainCmd = isRoot ? `su -s /bin/bash kai -c 'rtk gain 2>/dev/null'` : `rtk gain 2>/dev/null`;
+          const raw = (0, import_node_child_process.execSync)(gainCmd, { encoding: "utf-8", timeout: 5e3 }).trim();
+          rtkSavings = parseRtkSavings(raw);
+        } catch {
+        }
+        let resultText = json.result ?? json.content ?? "";
+        if (!resultText && json.is_error) {
+          resultText = `\u26A0\uFE0F Task incomplete (${json.subtype ?? "error"}): reached ${json.num_turns ?? "?"} turns. Ask me to continue or simplify the request.`;
+        }
+        if (!resultText) resultText = output;
+        const cacheRead = json.usage?.cache_read_input_tokens ?? 0;
+        const cacheWrite = json.usage?.cache_creation_input_tokens ?? 0;
+        const freshInput = json.usage?.input_tokens ?? 0;
+        settled = true;
+        resolve({
+          text: resultText,
+          costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
+          numTurns: json.num_turns ?? 1,
+          inputTokens: freshInput + cacheRead + cacheWrite,
+          outputTokens: json.usage?.output_tokens ?? 0,
+          cacheReadTokens: cacheRead,
+          cacheWriteTokens: cacheWrite,
+          rtkSavings
+        });
+      } catch (e) {
+        settled = true;
+        reject(new Error(`Failed to parse CLI output: ${e.message}`));
+      }
+    });
+  });
+}
+async function safeUpdate(o, owner, repo, id, body) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await o.issues.updateComment({ owner, repo, comment_id: id, body });
+      return;
+    } catch (err) {
+      const st = typeof err === "object" && err !== null && "status" in err ? Number(err.status ?? 0) : 0;
+      if (st >= 500 && attempt < 2) {
+        await new Promise((r) => setTimeout(r, 1e3 * Math.pow(2, attempt)));
+        continue;
+      }
+      return;
+    }
+  }
+}
+
+// src/budget.ts
+var PRICING_USD_PER_MILLION = {
+  // Claude Haiku 4.5 (ballpark — tune as Anthropic publishes updates).
+  haiku: { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
+  sonnet: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
+  opus: { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 }
+};
+function requiredNumberEnv(name) {
+  const raw = process.env[name];
+  if (!raw || !raw.trim()) throw new Error(`Missing required env: ${name}`);
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`Invalid number for ${name}: ${raw}`);
+  return value;
+}
+var MAX_COST_USD_BY_TIER = {
+  haiku: requiredNumberEnv("KAI_MAX_COST_USD_HAIKU"),
+  sonnet: requiredNumberEnv("KAI_MAX_COST_USD_SONNET"),
+  opus: requiredNumberEnv("KAI_MAX_COST_USD_OPUS")
+};
+function isShortAnswerRequest(message) {
+  return /\b(one\s+(?:sentence|line|word|paragraph)|1\s+sentence|single\s+sentence|briefly|tl;?\s*dr|in\s+(?:a\s+)?(?:word|sentence|line)|short\s+answer|yes\/no|quick(?:ly)?)\b/i.test(message);
+}
+function getMaxTurns(message, modelTier) {
+  if (modelTier === "opus") return 25;
+  if (modelTier === "sonnet") return 20;
+  if (/fix|commit|push|apply|create|patch|refactor|document/i.test(message)) return 20;
+  if (isShortAnswerRequest(message)) return 2;
+  const isTrulySimple = message.length < 50 && /^(top|list|one-liner|quick|summarize|how many|which file)/i.test(message);
+  return isTrulySimple ? 8 : 12;
+}
+function disallowedToolsFor(userMessage) {
+  if (!isShortAnswerRequest(userMessage)) return [];
+  return ["Read", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"];
+}
+var MAX_PROMPT_TOKENS = requiredNumberEnv("KAI_MAX_PROMPT_TOKENS");
+var SHORT_ANSWER_MAX_INPUT_TOKENS = requiredNumberEnv("KAI_SHORT_ANSWER_MAX_INPUT_TOKENS");
+function preflightBudget(userMessage, promptTokens, tier2) {
+  if (promptTokens > MAX_PROMPT_TOKENS) {
+    return { allowed: false, reason: `prompt ${promptTokens} tokens > hard ceiling ${MAX_PROMPT_TOKENS}` };
+  }
+  if (isShortAnswerRequest(userMessage) && promptTokens > SHORT_ANSWER_MAX_INPUT_TOKENS) {
+    return {
+      allowed: false,
+      reason: `short-answer prompt ${promptTokens} tokens > cap ${SHORT_ANSWER_MAX_INPUT_TOKENS}`
+    };
+  }
+  const maxTurns = getMaxTurns(userMessage, tier2);
+  const price = PRICING_USD_PER_MILLION[tier2] ?? PRICING_USD_PER_MILLION.haiku;
+  const worstInputCost = maxTurns * promptTokens * price.input / 1e6;
+  const worstOutputCost = maxTurns * 1e3 * price.output / 1e6;
+  const worstTotal = worstInputCost + worstOutputCost;
+  const cap = MAX_COST_USD_BY_TIER[tier2] ?? MAX_COST_USD_BY_TIER.haiku;
+  if (worstTotal > cap) {
+    return {
+      allowed: false,
+      reason: `worst-case projection $${worstTotal.toFixed(4)} > tier cap $${cap} (${maxTurns}t \xD7 ${promptTokens}tok)`
+    };
+  }
+  return { allowed: true };
+}
+
+// src/index.ts
 async function getPRCommentsContext(octokit, owner, repo, issueNumber, maxComments = 5, maxChars = 200) {
   try {
     const { data: comments } = await octokit.issues.listComments({
@@ -28753,220 +29101,14 @@ async function getPRCommentsContext(octokit, owner, repo, issueNumber, maxCommen
     return "";
   }
 }
+var rawLogLevel = process.env.KAI_LOG_LEVEL;
+if (!rawLogLevel) throw new Error("KAI_LOG_LEVEL is required");
+var log = createLogger2("kai-action", rawLogLevel);
 var MODELS = {
   haiku: { id: "claude-haiku-4-5-20251001", label: "Haiku" },
   sonnet: { id: "claude-sonnet-4-20250514", label: "Sonnet" },
   opus: { id: "claude-opus-4-20250514", label: "Opus" }
 };
-var DEFAULT_MODEL = "haiku";
-function parseModelFromMessage(message) {
-  for (const tier of ["opus", "sonnet", "haiku"]) {
-    const pattern = new RegExp(`use\\s+${tier}`, "i");
-    if (pattern.test(message)) {
-      return { model: tier, cleanMessage: message.replace(pattern, "").trim() || "review this PR" };
-    }
-  }
-  return { model: DEFAULT_MODEL, cleanMessage: message };
-}
-function requireClaudeCLI() {
-  try {
-    (0, import_node_child_process.execSync)("claude --version", { stdio: "pipe", timeout: 5e3 });
-  } catch {
-    throw new Error("Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code");
-  }
-}
-function requireRTK() {
-  try {
-    const ver = (0, import_node_child_process.execSync)("rtk --version", { stdio: "pipe", timeout: 5e3, encoding: "utf-8" }).trim();
-    const help = (0, import_node_child_process.execSync)("rtk --help", { stdio: "pipe", timeout: 5e3, encoding: "utf-8" });
-    if (!help.includes("rewrite")) {
-      throw new Error("Wrong rtk binary (missing 'rewrite' command). Need rtk-ai/rtk, not crates.io rtk.");
-    }
-    requireRTKHookConfigured();
-    core.info(`RTK verified: ${ver}`);
-    return ver;
-  } catch (e) {
-    if (e instanceof Error && (e.message.includes("Wrong rtk") || e.message.includes("RTK hook"))) throw e;
-    const msg = e instanceof Error ? e.message.slice(0, 200) : String(e);
-    throw new Error(`RTK is required but not available: ${msg}`);
-  }
-}
-function requireRTKHookConfigured() {
-  if (process.env.KAI_RTK_HOOK_SKIP_CHECK === "true") {
-    core.warning("KAI_RTK_HOOK_SKIP_CHECK=true \u2014 skipping RTK hook verification (RTK may be bypassed)");
-    return;
-  }
-  const candidates = [
-    process.env.KAI_CLAUDE_SETTINGS_PATH,
-    `${process.env.HOME || "/home/kai"}/.claude/settings.json`,
-    "/home/kai/.claude/settings.json",
-    "/root/.claude/settings.json"
-  ].filter((p) => !!p);
-  for (const path of candidates) {
-    try {
-      if (!(0, import_node_fs2.existsSync)(path)) continue;
-      const content = (0, import_node_fs2.readFileSync)(path, "utf-8");
-      if (/\brtk\b/i.test(content)) {
-        core.info(`RTK hook found in ${path}`);
-        return;
-      }
-    } catch {
-    }
-  }
-  throw new Error(
-    "RTK hook not configured in Claude settings.json \u2014 RTK would be bypassed silently. Configure PreToolUse hook with rtk, or set KAI_RTK_HOOK_SKIP_CHECK=true to override."
-  );
-}
-async function probeHealth(url, timeoutMs = 1500) {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    const r = await fetch(`${url.replace(/\/$/, "")}/health`, { signal: ctl.signal });
-    return r.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(t);
-  }
-}
-var runnerDiagnosticsEmitted = false;
-function emitRunnerDiagnostics(routerUrl, compressorUrl) {
-  if (runnerDiagnosticsEmitted) return;
-  runnerDiagnosticsEmitted = true;
-  const tryRun = (label, cmd, timeoutMs = 5e3) => {
-    try {
-      const out = (0, import_node_child_process.execSync)(cmd, { stdio: "pipe", timeout: timeoutMs, encoding: "utf-8" }).trim();
-      core.info(`[diag] ${label}: ${out.slice(0, 600)}`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message.slice(0, 200) : String(e);
-      core.info(`[diag] ${label}: ERROR ${msg}`);
-    }
-  };
-  core.info("===== runner diagnostics =====");
-  tryRun("uname", "uname -a");
-  tryRun("whoami", "whoami && id");
-  tryRun("cwd", "pwd");
-  tryRun("PATH", "echo $PATH");
-  tryRun("HOME", "echo $HOME");
-  tryRun("docker-cli", "command -v docker || echo not-found");
-  tryRun("docker-sock", "ls -la /var/run/docker.sock 2>/dev/null || echo no-socket");
-  tryRun("listening-ports", "(ss -tln 2>/dev/null || netstat -tln 2>/dev/null || echo no-ss) | head -20");
-  tryRun("processes-listening", "lsof -iTCP -sTCP:LISTEN 2>/dev/null | head -20 || echo no-lsof");
-  tryRun("action-path-ls", "ls -la /home/runner/actions-runner/_work/_actions/er-zhi/kai/v1 2>/dev/null | head -10 || echo not-found");
-  tryRun("bundleDir-ls", "ls -la $(dirname $(node -e 'console.log(process.argv[1])' 2>/dev/null || echo /))/.. 2>/dev/null | head -10 || echo not-found");
-  if (routerUrl) {
-    tryRun(`curl ${routerUrl}/health`, `curl -sS -v --max-time 5 ${routerUrl.replace(/\/$/, "")}/health 2>&1 | tail -30`);
-  }
-  if (compressorUrl) {
-    tryRun(`curl ${compressorUrl}/health`, `curl -sS -v --max-time 5 ${compressorUrl.replace(/\/$/, "")}/health 2>&1 | tail -30`);
-  }
-  core.info("===== /runner diagnostics =====");
-}
-async function ensureLocalLLMsUp(routerUrl, compressorUrl) {
-  if (process.env.KAI_LLM_AUTOSTART === "false") return;
-  const endpoints = [routerUrl, compressorUrl].filter((u) => !!u);
-  if (endpoints.length === 0) return;
-  const probes = await Promise.all(endpoints.map((u) => probeHealth(u)));
-  if (probes.every(Boolean)) return;
-  emitRunnerDiagnostics(routerUrl, compressorUrl);
-  const bundleDir = typeof __dirname === "string" ? __dirname : "";
-  const composeCandidates = [
-    process.env.KAI_COMPOSE_FILE,
-    bundleDir ? `${bundleDir}/../docker-compose.router.yml` : "",
-    process.env.GITHUB_ACTION_PATH ? `${process.env.GITHUB_ACTION_PATH}/docker-compose.router.yml` : "",
-    "/home/kai/kai-router/docker-compose.router.yml",
-    "/home/kai/docker-compose.router.yml",
-    `${process.env.HOME || "/home/kai"}/kai-router/docker-compose.router.yml`
-  ].filter((p) => !!p && (0, import_node_fs2.existsSync)(p));
-  if ((0, import_node_fs2.existsSync)("/var/run/docker.sock")) {
-    const sh = (cmd, timeout = 1e4) => {
-      try {
-        const out = (0, import_node_child_process.execSync)(cmd, { stdio: ["pipe", "pipe", "pipe"], timeout, encoding: "utf-8" });
-        return { ok: true, out: out.toString() };
-      } catch (e) {
-        const err = e;
-        const merged = [err.stdout?.toString?.() ?? "", err.stderr?.toString?.() ?? "", err.message ?? ""].join("\n");
-        return { ok: false, out: merged.slice(0, 800) };
-      }
-    };
-    core.info("[diag] docker-sock probe starting");
-    core.info(`[diag] curl-version: ${sh("curl --version | head -2").out.trim()}`);
-    core.info(`[diag] sock-stat: ${sh("stat -c '%A %U:%G uid=%u gid=%g' /var/run/docker.sock").out.trim()}`);
-    core.info(`[diag] my-groups: ${sh("id -G; echo gid-names; id -Gn").out.trim()}`);
-    core.info(`[diag] can-write-sock: ${sh("[ -w /var/run/docker.sock ] && echo yes || echo no").out.trim()}`);
-    const ping = sh("curl -sS -v --unix-socket /var/run/docker.sock http://localhost/_ping 2>&1 | tail -15");
-    core.info(`[diag] /_ping (ok=${ping.ok}):
-${ping.out.trim()}`);
-    const filters = encodeURIComponent(JSON.stringify({ name: ["kai-router", "kai-compressor"] }));
-    const listCmd = `curl -sS -v --unix-socket /var/run/docker.sock 'http://localhost/containers/json?all=true&filters=${filters}' 2>&1`;
-    const listRes = sh(listCmd);
-    core.info(`[diag] list (ok=${listRes.ok}):
-${listRes.out.slice(-1500)}`);
-    if (listRes.ok) {
-      try {
-        const jsonStart = listRes.out.indexOf("[");
-        const body = jsonStart >= 0 ? listRes.out.slice(jsonStart) : listRes.out;
-        const containers = JSON.parse(body);
-        if (containers.length === 0) {
-          core.warning("[diag] docker API: no kai-router/kai-compressor containers");
-        }
-        for (const c of containers) {
-          const name = (c.Names[0] || "").replace(/^\//, "");
-          core.info(`[diag] container ${name}: state=${c.State} status=${c.Status} image=${c.Image}`);
-          const logs = sh(
-            `curl -sS --unix-socket /var/run/docker.sock 'http://localhost/containers/${c.Id}/logs?stdout=1&stderr=1&tail=80&timestamps=1' 2>&1 | tr -cd '[:print:][:space:]'`
-          );
-          core.info(`[diag] ${name} last 80 lines (ok=${logs.ok}):
-${logs.out.slice(-3e3)}`);
-        }
-      } catch (e) {
-        core.info(`[diag] parse error: ${e instanceof Error ? e.message : e}`);
-      }
-    }
-  }
-  const composeFile = composeCandidates[0];
-  const hasDockerCli = (() => {
-    try {
-      (0, import_node_child_process.execSync)("command -v docker", { stdio: "pipe", timeout: 2e3 });
-      return true;
-    } catch {
-      return false;
-    }
-  })();
-  if (hasDockerCli && composeFile) {
-    core.info(`Starting containers via ${composeFile}`);
-    try {
-      (0, import_node_child_process.execSync)(
-        `docker compose -f ${shellQuote(composeFile)} run --rm kai-router-pull`,
-        { stdio: "pipe", timeout: 18e4 }
-      );
-      (0, import_node_child_process.execSync)(
-        `docker compose -f ${shellQuote(composeFile)} run --rm kai-compressor-pull`,
-        { stdio: "pipe", timeout: 18e4 }
-      );
-      (0, import_node_child_process.execSync)(
-        `docker compose -f ${shellQuote(composeFile)} up -d kai-router-llm kai-compressor-llm`,
-        { stdio: "pipe", timeout: 6e4 }
-      );
-    } catch (e) {
-      core.warning(`docker compose up failed: ${e instanceof Error ? e.message.slice(0, 200) : e}`);
-      return;
-    }
-  } else {
-    core.warning("No docker CLI available to restart containers; leaving as-is until we know why they're down.");
-    return;
-  }
-  const deadline = Date.now() + 3e4;
-  while (Date.now() < deadline) {
-    const ok = await Promise.all(endpoints.map((u) => probeHealth(u)));
-    if (ok.every(Boolean)) {
-      core.info("Local LLM is healthy after auto-start");
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 2e3));
-  }
-  core.warning("Local LLM auto-start timed out \u2014 proceeding; router call will retry");
-}
 var KODIF_ARCH_CONTEXT = `
 Kodif platform: 33+ microservices. Architecture repo: kodif-team/architect
 DBs: executor-db (kodif, PostgreSQL 13), chat-db (chat, PostgreSQL 15), ml-db (zendesk-json-db-pgadmin, PostgreSQL 13). All sync to BigQuery (kodif-51ce2, public dataset).
@@ -28989,12 +29131,12 @@ function logErrorToSentry(error2, extra) {
   }
 }
 function gitOutput(command) {
-  return (0, import_node_child_process.execSync)(command, { stdio: "pipe", timeout: 3e4, encoding: "utf-8" }).trim();
+  return (0, import_node_child_process2.execSync)(command, { stdio: "pipe", timeout: 3e4, encoding: "utf-8" }).trim();
 }
 var MAX_DIFF_CHARS = Number(process.env.KAI_MAX_DIFF_CHARS || 12e3);
 function getPrDiffDigest() {
   try {
-    const diff = (0, import_node_child_process.execSync)("git diff origin/main...HEAD --no-color --unified=3", {
+    const diff = (0, import_node_child_process2.execSync)("git diff origin/main...HEAD --no-color --unified=3", {
       stdio: "pipe",
       timeout: 15e3,
       encoding: "utf-8",
@@ -29008,7 +29150,7 @@ function getPrDiffDigest() {
 ... [truncated ${diff.length - MAX_DIFF_CHARS} chars] ...
 ${tail}`;
   } catch (e) {
-    core.warning(`diff digest failed: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
+    core3.warning(`diff digest failed: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
     return "";
   }
 }
@@ -29016,8 +29158,8 @@ function stripProviderCoAuthorFromHead() {
   const message = gitOutput("git log -1 --pretty=%B");
   const cleaned = message.split("\n").filter((line) => !/^Co-Authored-By:\s*(Claude|Anthropic|OpenAI|ChatGPT|Codex|AI)/i.test(line.trim())).join("\n").trim();
   if (cleaned && cleaned !== message.trim()) {
-    core.info("Removing AI provider Co-Authored-By trailer from HEAD commit");
-    (0, import_node_child_process.execSync)(`git commit --amend -m ${shellQuote(cleaned)}`, { stdio: "pipe", timeout: 3e4 });
+    core3.info("Removing AI provider Co-Authored-By trailer from HEAD commit");
+    (0, import_node_child_process2.execSync)(`git commit --amend -m ${shellQuote(cleaned)}`, { stdio: "pipe", timeout: 3e4 });
   }
 }
 function gitAuthFlag(githubToken) {
@@ -29029,24 +29171,24 @@ function commitVerificationNote(userMessage, beforeHead, branch, githubToken) {
   const quotedBranch = shellQuote(branch);
   const auth2 = gitAuthFlag(githubToken);
   try {
-    (0, import_node_child_process.execSync)("git reset -- .claudeignore && rm -f .claudeignore", { stdio: "pipe", timeout: 5e3 });
+    (0, import_node_child_process2.execSync)("git reset -- .claudeignore && rm -f .claudeignore", { stdio: "pipe", timeout: 5e3 });
   } catch {
   }
   const afterHeadBeforeCommit = gitOutput("git rev-parse HEAD");
   if (afterHeadBeforeCommit !== beforeHead) {
     stripProviderCoAuthorFromHead();
     const amendedHead = gitOutput("git rev-parse HEAD");
-    core.info(`Commit requested \u2014 pushing existing commit ${amendedHead.slice(0, 7)} to ${branch}`);
-    (0, import_node_child_process.execSync)(`git ${auth2} push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 6e4 });
+    core3.info(`Commit requested \u2014 pushing existing commit ${amendedHead.slice(0, 7)} to ${branch}`);
+    (0, import_node_child_process2.execSync)(`git ${auth2} push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 6e4 });
     return `
 
 **Commit verification:** pushed \`${amendedHead.slice(0, 7)}\` to \`${branch}\`.`;
   }
   const status = gitOutput("git status --porcelain");
   if (status) {
-    core.info("Commit requested and worktree is dirty \u2014 committing changes deterministically");
-    (0, import_node_child_process.execSync)("git add -A", { stdio: "pipe", timeout: 3e4 });
-    (0, import_node_child_process.execSync)(`git commit -m ${shellQuote("chore: apply Kai requested changes")}`, {
+    core3.info("Commit requested and worktree is dirty \u2014 committing changes deterministically");
+    (0, import_node_child_process2.execSync)("git add -A", { stdio: "pipe", timeout: 3e4 });
+    (0, import_node_child_process2.execSync)(`git commit -m ${shellQuote("chore: apply Kai requested changes")}`, {
       stdio: "pipe",
       timeout: 3e4
     });
@@ -29055,16 +29197,27 @@ function commitVerificationNote(userMessage, beforeHead, branch, githubToken) {
   if (afterHead !== beforeHead) {
     stripProviderCoAuthorFromHead();
     const amendedHead = gitOutput("git rev-parse HEAD");
-    core.info(`Commit requested \u2014 pushing ${amendedHead.slice(0, 7)} to ${branch}`);
-    (0, import_node_child_process.execSync)(`git ${auth2} push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 6e4 });
+    core3.info(`Commit requested \u2014 pushing ${amendedHead.slice(0, 7)} to ${branch}`);
+    (0, import_node_child_process2.execSync)(`git ${auth2} push origin HEAD:${quotedBranch}`, { stdio: "pipe", timeout: 6e4 });
     return `
 
 **Commit verification:** pushed \`${amendedHead.slice(0, 7)}\` to \`${branch}\`.`;
   }
-  core.warning("Commit requested but no commit was created and worktree is clean");
+  core3.warning("Commit requested but no commit was created and worktree is clean");
   return `
 
 **Commit verification failed:** no file changes or new commit were found after the requested work. Nothing was pushed.`;
+}
+async function attemptInfrastructureRecovery(reason) {
+  if (!reason.includes("local router") && !reason.includes("compressor") && !reason.includes("fetch failed")) {
+    return;
+  }
+  try {
+    (0, import_node_child_process2.execSync)("docker compose restart kai-router kai-compressor", { stdio: "pipe", timeout: 6e4 });
+    core3.warning("Infrastructure recovery attempted: docker compose restart kai-router kai-compressor");
+  } catch (err) {
+    core3.warning(`Infrastructure recovery failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 var isShortAnswerRequest2 = isShortAnswerRequest;
 function buildCLIPrompt(userMessage, prTitle, prBody, filesList, prCommentsContext, repoFullName, route, focusedFiles = [], prDiffDigest = "") {
@@ -29114,185 +29267,24 @@ ${prCommentsContext}`);
   return buildCacheFriendlyPrompt({ stable, dynamic });
 }
 var getMaxTurns2 = getMaxTurns;
-var HEARTBEAT_INTERVAL_MS = 15e3;
-var CLI_TIMEOUT_MS = 3e5;
-var RETRY_DELAYS = [15e3, 3e4, 6e4];
-function maxRetriesFor(tier) {
-  if (tier === "opus") return 1;
-  if (tier === "sonnet") return 2;
-  return Number(process.env.KAI_MAX_CLI_RETRIES || 3);
-}
 var MAX_COST_USD_BY_TIER2 = MAX_COST_USD_BY_TIER;
-var LOADING_GIF = "https://emojis.slackmojis.com/emojis/images/1643514453/4358/loading.gif?1643514453";
-var PHASES = [
-  "Reading PR context",
-  "Loading conversation history",
-  "Analyzing code changes",
-  "Running security checks",
-  "Inspecting files",
-  "Preparing response"
-];
-function spinnerFrame(_tick, elapsed, _modelLabel) {
-  const phase = PHASES[Math.min(Math.floor(elapsed / 10), PHASES.length - 1)];
-  return `<img src="${LOADING_GIF}" width="20" height="20"> ${phase}...
-
-_Delete this comment to cancel._`;
-}
-async function callClaudeCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, heartbeat, db, runId, modelTier, disallowedTools = []) {
-  const isRoot = process.getuid?.() === 0;
-  const maxRetries = maxRetriesFor(modelTier);
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    sessionUpdate(db, runId, `cli-attempt-${attempt}`, { attempt });
-    if (attempt > 1) {
-      const delay = RETRY_DELAYS[attempt - 2] ?? 6e4;
-      core.info(`Retry ${attempt}/${maxRetries} in ${delay / 1e3}s`);
-      await safeUpdate(
-        heartbeat.octokit,
-        heartbeat.owner,
-        heartbeat.repo,
-        heartbeat.replyCommentId,
-        `> \u26A0\uFE0F Retrying (attempt ${attempt}/${maxRetries})...
-
-\u{1F504} Previous attempt failed, waiting ${delay / 1e3}s before retry
-\u{1F50D} **${heartbeat.modelLabel}**
-
-_Delete this comment to cancel._`
-      );
-      await new Promise((r) => setTimeout(r, delay));
-    }
-    try {
-      const result = await runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, heartbeat, db, runId, disallowedTools);
-      sessionUpdate(db, runId, "completed", { status: "completed" });
-      return result;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message.slice(0, 200) : String(e);
-      core.warning(`CLI attempt ${attempt} failed: ${msg}`);
-      sessionUpdate(db, runId, `failed-attempt-${attempt}`, { error: msg });
-      if (attempt === maxRetries) {
-        sessionUpdate(db, runId, "failed", { status: "failed", error: msg });
-        throw e;
-      }
-    }
-  }
-  throw new Error("All CLI retries exhausted");
-}
 var disallowedToolsFor2 = disallowedToolsFor;
-function runCLIWithHeartbeat(apiKey, modelId, prompt, maxTurns, isRoot, hb, db, runId, disallowedTools = []) {
-  return new Promise((resolve, reject) => {
-    const claudeArgs = ["-p", "--dangerously-skip-permissions", "--output-format", "json", "--max-turns", String(maxTurns), "--model", modelId];
-    if (disallowedTools.length) {
-      claudeArgs.push("--disallowed-tools", disallowedTools.join(","));
-    }
-    const startTime = Date.now();
-    let output = "";
-    let settled = false;
-    core.info(`Executing: claude CLI (${modelId})`);
-    let child;
-    if (isRoot) {
-      child = (0, import_node_child_process.spawn)("su", ["-s", "/bin/bash", "kai", "-c", `ANTHROPIC_API_KEY=${apiKey} claude ${claudeArgs.join(" ")}`], {
-        env: { ...process.env, ANTHROPIC_API_KEY: apiKey }
-      });
-    } else {
-      child = (0, import_node_child_process.spawn)("claude", claudeArgs, {
-        env: { ...process.env, ANTHROPIC_API_KEY: apiKey }
-      });
-    }
-    child.stdin?.write(prompt);
-    child.stdin?.end();
-    child.stdout?.on("data", (data) => {
-      output += data.toString();
-    });
-    child.stderr?.on("data", (data) => {
-      core.info(`CLI stderr: ${data.toString().slice(0, 200)}`);
-    });
-    let tick = 0;
-    const heartbeatTimer = setInterval(async () => {
-      const elapsed = Math.round((Date.now() - startTime) / 1e3);
-      tick++;
-      sessionUpdate(db, runId, "running");
-      const exists = await commentExists(hb.octokit, hb.owner, hb.repo, hb.replyCommentId);
-      if (!exists) {
-        core.info("Comment deleted \u2014 killing CLI");
-        child.kill("SIGTERM");
-        clearInterval(heartbeatTimer);
-        if (!settled) {
-          settled = true;
-          reject(new Error("Cancelled by user"));
-        }
-        return;
-      }
-      await safeUpdate(
-        hb.octokit,
-        hb.owner,
-        hb.repo,
-        hb.replyCommentId,
-        spinnerFrame(tick, elapsed, hb.modelLabel)
-      );
-    }, HEARTBEAT_INTERVAL_MS);
-    const timeoutTimer = setTimeout(() => {
-      core.warning(`CLI timeout after ${CLI_TIMEOUT_MS / 1e3}s`);
-      child.kill("SIGTERM");
-    }, CLI_TIMEOUT_MS);
-    child.on("close", (code) => {
-      clearInterval(heartbeatTimer);
-      clearTimeout(timeoutTimer);
-      if (settled) return;
-      if (code !== 0 && !output) {
-        settled = true;
-        reject(new Error(`CLI exited with code ${code}`));
-        return;
-      }
-      try {
-        const json = JSON.parse(output);
-        let rtkSavings = "";
-        try {
-          const gainCmd = isRoot ? `su -s /bin/bash kai -c 'rtk gain 2>/dev/null'` : `rtk gain 2>/dev/null`;
-          const raw = (0, import_node_child_process.execSync)(gainCmd, { encoding: "utf-8", timeout: 5e3 }).trim();
-          const m = raw.match(/Tokens saved:.*?\((\d+(?:\.\d+)?)%\)/);
-          rtkSavings = m ? m[1] + "%" : "";
-        } catch {
-        }
-        let resultText = json.result ?? json.content ?? "";
-        if (!resultText && json.is_error) {
-          resultText = `\u26A0\uFE0F Task incomplete (${json.subtype ?? "error"}): reached ${json.num_turns ?? "?"} turns. Ask me to continue or simplify the request.`;
-        }
-        if (!resultText) resultText = output;
-        const cacheRead = json.usage?.cache_read_input_tokens ?? 0;
-        const cacheWrite = json.usage?.cache_creation_input_tokens ?? 0;
-        const freshInput = json.usage?.input_tokens ?? 0;
-        settled = true;
-        resolve({
-          text: resultText,
-          costUsd: json.total_cost_usd ?? json.cost_usd ?? 0,
-          numTurns: json.num_turns ?? 1,
-          inputTokens: freshInput + cacheRead + cacheWrite,
-          outputTokens: json.usage?.output_tokens ?? 0,
-          cacheReadTokens: cacheRead,
-          cacheWriteTokens: cacheWrite,
-          rtkSavings
-        });
-      } catch (e) {
-        settled = true;
-        reject(new Error(`Failed to parse CLI output: ${e.message}`));
-      }
-    });
-  });
-}
 async function run() {
   let octokit = null;
   let owner = "", repo = "", replyCommentId = 0;
   let sender = "", rawMessage = "";
   try {
-    const trigger = core.getInput("trigger_phrase") || "@kai";
-    const githubToken = core.getInput("github_token");
-    const anthropicApiKey = core.getInput("anthropic_api_key");
-    const routerUrl = core.getInput("router_url") || process.env.KAI_ROUTER_URL;
-    const routerModel = core.getInput("router_model") || process.env.KAI_ROUTER_MODEL || "LFM2-350M";
-    const compressorUrl = core.getInput("compressor_url") || process.env.KAI_COMPRESSOR_URL;
-    const compressorModel = core.getInput("compressor_model") || process.env.KAI_COMPRESSOR_MODEL || "LFM2-350M";
-    const compressorDisabled = (core.getInput("compressor_disable") || process.env.KAI_COMPRESSOR_DISABLE || "false").toLowerCase() === "true";
-    const compressorMinQueryTokens = Number(core.getInput("compressor_min_query_tokens") || process.env.KAI_COMPRESSOR_MIN_QUERY_TOKENS || 10);
-    const compressorMinPromptTokens = Number(core.getInput("compressor_min_prompt_tokens") || process.env.KAI_COMPRESSOR_MIN_PROMPT_TOKENS || 2200);
+    const cfg = loadConfig();
+    const trigger = core3.getInput("trigger_phrase") || "@kai";
+    const githubToken = core3.getInput("github_token");
+    const anthropicApiKey = core3.getInput("anthropic_api_key");
+    const routerUrl = core3.getInput("router_url") || cfg.routerUrl;
+    const routerModel = core3.getInput("router_model") || cfg.routerModel;
+    const compressorUrl = core3.getInput("compressor_url") || cfg.compressorUrl;
+    const compressorModel = core3.getInput("compressor_model") || cfg.compressorModel;
+    const compressorDisabled = (core3.getInput("compressor_disable") || process.env.KAI_COMPRESSOR_DISABLE || "false").toLowerCase() === "true";
+    const compressorMinQueryTokens = Number(core3.getInput("compressor_min_query_tokens") || cfg.compressorMinQueryTokens);
+    const compressorMinPromptTokens = Number(core3.getInput("compressor_min_prompt_tokens") || cfg.compressorMinPromptTokens);
     const { context: context2 } = github;
     const event = context2.eventName;
     let commentBody = "", commentId = 0, issueNumber = 0;
@@ -29307,8 +29299,7 @@ async function run() {
     if (sender.includes("[bot]")) return;
     octokit = new Octokit2({ auth: githubToken });
     ({ owner, repo } = context2.repo);
-    const auditDb = initAuditDb();
-    await ensureLocalLLMsUp(routerUrl, compressorUrl);
+    const auditDb = initAuditDb(cfg.auditDbPath);
     const idx = commentBody.toLowerCase().indexOf(trigger.toLowerCase());
     rawMessage = commentBody.slice(idx + trigger.length).trim();
     const { model: parsedTier, cleanMessage: userMessage } = parseModelFromMessage(rawMessage);
@@ -29320,11 +29311,11 @@ async function run() {
         suggestedTier = await suggestTierWithLocalLLM(userMessage, {
           url: routerUrl,
           model: routerModel,
-          timeoutMs: 2500
+          timeoutMs: cfg.routerTimeoutMs
         });
-        if (suggestedTier) core.info(`Local-LLM tier suggestion: ${suggestedTier} (task: "${userMessage.slice(0, 40)}")`);
+        if (suggestedTier) core3.info(`Local-LLM tier suggestion: ${suggestedTier} (task: "${userMessage.slice(0, 40)}")`);
       } catch (e) {
-        core.warning(`Tier suggest failed: ${e}`);
+        core3.warning(`Tier suggest failed: ${e}`);
       }
     }
     const requestedTier = suggestedTier ?? parsedTier;
@@ -29334,15 +29325,15 @@ async function run() {
 
 > _Note: @${sender} is allowed up to **${senderMaxTier}**. Requested **${requestedTier}** was downgraded to **${modelTier}**. Ask an admin to update the allowlist._` : "";
     if (tierDowngraded) {
-      core.warning(`Tier downgrade for @${sender}: ${requestedTier} -> ${modelTier} (max=${senderMaxTier})`);
+      core3.warning(`Tier downgrade for @${sender}: ${requestedTier} -> ${modelTier} (max=${senderMaxTier})`);
     }
     const route = await routeEventWithLocalLLM(userMessage, modelTier, {
       url: routerUrl,
       model: routerModel,
       timeoutMs: 5e3
     });
-    core.info(`Triggered by @${sender} in #${issueNumber}`);
-    core.info(`Router: ${route.intent} -> ${route.decision} (${route.reason}, confidence ${route.confidence})`);
+    core3.info(`Triggered by @${sender} in #${issueNumber}`);
+    core3.info(`Router: ${route.intent} -> ${route.decision} (${route.reason}, confidence ${route.confidence})`);
     const runId = `${owner}/${repo}#${issueNumber}-${Date.now()}`;
     const startTime = Date.now();
     logRouterDecision(auditDb, {
@@ -29352,7 +29343,6 @@ async function run() {
       sender,
       route
     });
-    if (route.decision === "ignore") return;
     if (route.decision === "stop") {
       try {
         await octokit.reactions.createForIssueComment({ owner, repo, comment_id: commentId, content: "+1" });
@@ -29370,7 +29360,7 @@ async function run() {
         tokensOut: 0,
         status: "cancelled"
       });
-      core.info(`Stop handled by local router (${routerModel})`);
+      core3.info(`Stop handled by local router (${routerModel})`);
       return;
     }
     try {
@@ -29378,10 +29368,10 @@ async function run() {
     } catch {
     }
     try {
-      const { previousAuditId } = detectAndRecordFollowup(auditDb, sender, `${owner}/${repo}`, issueNumber);
-      if (previousAuditId) core.info(`Follow-up detected; flagged audit #${previousAuditId}`);
+      const { previousAuditId } = detectAndRecordFollowupAudit(auditDb, sender, `${owner}/${repo}`, issueNumber);
+      if (previousAuditId) core3.info(`Follow-up detected; flagged audit #${previousAuditId}`);
     } catch (e) {
-      core.warning(`Follow-up detection failed: ${e}`);
+      core3.warning(`Follow-up detection failed: ${e}`);
     }
     auditLog(auditDb, {
       sender,
@@ -29446,7 +29436,7 @@ ${template}
       });
       sessionUpdate(auditDb, runId, "completed", { status: "completed", replyCommentId: metaReply.id });
       auditLog(auditDb, { sender, repo: `${owner}/${repo}`, prNumber: issueNumber, model: routerModel, message: rawMessage, durationMs: Date.now() - startTime, costUsd: 0, tokensIn: 0, tokensOut: 0, rtkSavings: "0.0%", status: "completed" });
-      core.info(`Template reply by local router (${routerModel})`);
+      core3.info(`Template reply by local router (${routerModel})`);
       return;
     }
     const rateLimit = checkRateLimit(auditDb, sender, `${owner}/${repo}`);
@@ -29478,18 +29468,18 @@ ${template}
         status: "rate-limited",
         error: rateLimit.reason
       });
-      core.warning(`Rate-limited @${sender}: ${rateLimit.reason}`);
+      core3.warning(`Rate-limited @${sender}: ${rateLimit.reason}`);
       return;
     }
     requireClaudeCLI();
     const rtkVersion = requireRTK();
     const modeLabel = "CLI + RTK";
-    core.info(`Mode: ${modeLabel} | Model: ${selectedModel.label} | RTK: ${rtkVersion}`);
+    core3.info(`Mode: ${modeLabel} | Model: ${selectedModel.label} | RTK: ${rtkVersion}`);
     const { data: reply } = await octokit.issues.createComment({
       owner,
       repo,
       issue_number: issueNumber,
-      body: spinnerFrame(0, 0, selectedModel.label)
+      body: buildHeartbeatFrame(0, 0, selectedModel.label)
     });
     replyCommentId = reply.id;
     sessionUpdate(auditDb, runId, "analyzing", { replyCommentId });
@@ -29498,31 +29488,31 @@ ${template}
     let contextManifestPath = "";
     let contextHistoryPath = "";
     try {
-      await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(1, 2, selectedModel.label));
+      await safeUpdate(octokit, owner, repo, replyCommentId, buildHeartbeatFrame(1, 2, selectedModel.label));
       sessionUpdate(auditDb, runId, "analyzing");
       const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: issueNumber });
       prTitle = pr.title;
       prBody = pr.body ?? "";
       prHeadRef = pr.head.ref;
       try {
-        (0, import_node_child_process.execSync)(`git config user.name "kodif-ai[bot]" && git config user.email "kodif-ai[bot]@users.noreply.github.com"`, {
+        (0, import_node_child_process2.execSync)(`git config user.name "kodif-ai[bot]" && git config user.email "kodif-ai[bot]@users.noreply.github.com"`, {
           stdio: "pipe",
           timeout: 5e3
         });
-        (0, import_node_child_process.execSync)(`git remote set-url origin https://github.com/${owner}/${repo}.git`, {
+        (0, import_node_child_process2.execSync)(`git remote set-url origin https://github.com/${owner}/${repo}.git`, {
           stdio: "pipe",
           timeout: 5e3
         });
         const auth2 = gitAuthFlag(githubToken);
-        (0, import_node_child_process.execSync)(`git ${auth2} fetch origin ${shellQuote(pr.head.ref)} && git checkout ${shellQuote(pr.head.ref)}`, {
+        (0, import_node_child_process2.execSync)(`git ${auth2} fetch origin ${shellQuote(pr.head.ref)} && git checkout ${shellQuote(pr.head.ref)}`, {
           stdio: "pipe",
           timeout: 3e4,
           encoding: "utf-8"
         });
         beforeHead = gitOutput("git rev-parse HEAD");
-        core.info(`Checked out PR branch: ${pr.head.ref} at ${beforeHead.slice(0, 7)}`);
+        core3.info(`Checked out PR branch: ${pr.head.ref} at ${beforeHead.slice(0, 7)}`);
       } catch (e) {
-        core.warning(`Could not checkout PR branch: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
+        core3.warning(`Could not checkout PR branch: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
       }
       const { data: files } = await octokit.pulls.listFiles({ owner, repo, pull_number: issueNumber, per_page: 100 });
       filesList = files.map((f) => `${f.filename} +${f.additions}/-${f.deletions}`).join("\n");
@@ -29531,7 +29521,7 @@ ${template}
       prCommentsContext = await getPRCommentsContext(octokit, owner, repo, issueNumber, commentWindow, commentChars);
       sessionUpdate(auditDb, runId, "context-loaded");
     } catch (e) {
-      core.warning(`PR context error: ${e instanceof Error ? e.message : e}`);
+      core3.warning(`PR context error: ${e instanceof Error ? e.message : e}`);
     }
     try {
       const contextPack = createDynamicContextPack({
@@ -29557,7 +29547,7 @@ ${template}
         source: route.source ?? "unknown"
       });
     } catch (e) {
-      core.warning(`Context pack build failed: ${e instanceof Error ? e.message : String(e)}`);
+      core3.warning(`Context pack build failed: ${e instanceof Error ? e.message : String(e)}`);
       logErrorToSentry(e, {
         subsystem: "dynamic-context-pack",
         owner,
@@ -29575,13 +29565,10 @@ ${filesList}`;
       footer = `_Add \`ANTHROPIC_API_KEY\` for AI analysis._`;
     } else {
       sessionUpdate(auditDb, runId, "executing");
-      await safeUpdate(octokit, owner, repo, replyCommentId, spinnerFrame(2, 5, selectedModel.label));
+      await safeUpdate(octokit, owner, repo, replyCommentId, buildHeartbeatFrame(2, 5, selectedModel.label));
       try {
-        (0, import_node_child_process.execSync)(`echo '.github/
-.claude/
-CLAUDE.md
-*.yml
-*.yaml' > .claudeignore`, {
+        (0, import_node_child_process2.execSync)(`printf '%s
+' '.github/' '.claude/' 'CLAUDE.md' '*.yml' '*.yaml' > .claudeignore`, {
           stdio: "pipe",
           timeout: 5e3
         });
@@ -29593,16 +29580,16 @@ CLAUDE.md
           focusedFiles = await selectRelevantFiles(userMessage, filesList, {
             url: compressorUrl,
             model: compressorModel,
-            timeoutMs: 2500,
+            timeoutMs: cfg.routerTimeoutMs,
             maxFiles: 5
           });
-          if (focusedFiles.length) core.info(`File focus: ${focusedFiles.join(", ")}`);
+          if (focusedFiles.length) core3.info(`File focus: ${focusedFiles.join(", ")}`);
         } catch (e) {
-          core.warning(`File focus failed: ${e}`);
+          core3.warning(`File focus failed: ${e}`);
         }
       }
       const prDiffDigest = beforeHead ? getPrDiffDigest() : "";
-      if (prDiffDigest) core.info(`PR diff digest attached: ${prDiffDigest.length} chars`);
+      if (prDiffDigest) core3.info(`PR diff digest attached: ${prDiffDigest.length} chars`);
       const prompt = contextManifestPath ? buildDynamicPromptFromManifest(
         userMessage,
         `${owner}/${repo}`,
@@ -29613,7 +29600,7 @@ CLAUDE.md
       const cached = lookupCachedReply(auditDb, prompt, `${owner}/${repo}`, issueNumber);
       if (cached) {
         const aid = latestAuditId(auditDb, sender, `${owner}/${repo}`, issueNumber);
-        if (aid != null) recordCacheHit(auditDb, aid);
+        if (aid != null) recordAuditCacheHit(auditDb, aid);
         const durationSec2 = Math.round((Date.now() - startTime) / 1e3);
         const cacheFooter = `Kai \xB7 cache hit \xB7 0K in / 0K out \xB7 $0.0000 \xB7 0t \xB7 ${durationSec2}s \xB7 deeper analysis: use sonnet / use opus`;
         await safeUpdate(
@@ -29658,19 +29645,19 @@ ${cached.reply}
         const compressed = await compressPromptWithQwen(prompt, userMessage, modelTier, {
           url: compressorUrl,
           model: compressorModel,
-          timeoutMs: Number(process.env.KAI_COMPRESSOR_TIMEOUT_MS || 1500),
+          timeoutMs: cfg.compressorTimeoutMs,
           disabled: compressorDisabled,
           minQueryTokens: compressorMinQueryTokens,
           minPromptTokens: compressorMinPromptTokens,
           budgetByTier: {
-            haiku: Number(process.env.KAI_COMPRESSOR_BUDGET_HAIKU || 6e3),
-            sonnet: Number(process.env.KAI_COMPRESSOR_BUDGET_SONNET || 24e3),
-            opus: Number(process.env.KAI_COMPRESSOR_BUDGET_OPUS || 8e4)
+            haiku: cfg.compressorBudgetHaiku,
+            sonnet: cfg.compressorBudgetSonnet,
+            opus: cfg.compressorBudgetOpus
           }
         });
         finalPrompt = compressed.prompt;
         cmpSavings = `${compressed.metrics.cmpPct}%`;
-        core.info(`Context compression: ${compressed.metrics.rawTokens} -> ${compressed.metrics.compressedTokens} tokens (${cmpSavings}, model=${compressed.metrics.usedModel})`);
+        core3.info(`Context compression: ${compressed.metrics.rawTokens} -> ${compressed.metrics.compressedTokens} tokens (${cmpSavings}, model=${compressed.metrics.usedModel})`);
         logContextOptimization(auditDb, {
           repo: `${owner}/${repo}`,
           prNumber: issueNumber,
@@ -29692,7 +29679,7 @@ ${cached.reply}
         }
       } catch (compressionError) {
         const compressionErrorMessage = compressionError instanceof Error ? compressionError.message : String(compressionError);
-        core.error(`Context compression failed: ${compressionErrorMessage}`);
+        core3.error(`Context compression failed: ${compressionErrorMessage}`);
         if (contextHistoryPath) {
           appendContextHistory(contextHistoryPath, "compression-failed", {
             reason: compressionErrorMessage
@@ -29705,7 +29692,7 @@ ${cached.reply}
           issueNumber,
           modelTier
         });
-        throw compressionError;
+        throw new Error(`context compression is required but failed: ${compressionErrorMessage}`);
       }
       const finalPromptTokens = estimateTokens(finalPrompt);
       const preflight = preflightBudget(userMessage, finalPromptTokens, modelTier);
@@ -29727,7 +29714,11 @@ If you asked for a terse answer, drop the \`one sentence\` / \`briefly\` / \`tl;
           status: "refused-pre-flight",
           error: preflight.reason
         });
-        if (!await commentExists(octokit, owner, repo, replyCommentId)) return;
+        try {
+          await octokit.issues.getComment({ owner, repo, comment_id: replyCommentId });
+        } catch {
+          return;
+        }
         await safeUpdate(
           octokit,
           owner,
@@ -29741,11 +29732,11 @@ ${result}
 <sub>${footer}</sub>`
         );
         sessionUpdate(auditDb, runId, "completed", { status: "refused-pre-flight" });
-        core.warning(`Pre-flight refused paid call: ${preflight.reason}`);
+        core3.warning(`Pre-flight refused paid call: ${preflight.reason}`);
         return;
       }
       const maxTurns = getMaxTurns2(userMessage, modelTier);
-      core.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);
+      core3.info(`Max turns: ${maxTurns} (task: "${userMessage.slice(0, 40)}")`);
       const heartbeatCtx = {
         octokit,
         owner,
@@ -29755,7 +29746,7 @@ ${result}
         modelLabel: selectedModel.label
       };
       const disallowed = disallowedToolsFor2(userMessage);
-      if (disallowed.length) core.info(`Gated tools: ${disallowed.join(",")}`);
+      if (disallowed.length) core3.info(`Gated tools: ${disallowed.join(",")}`);
       const r = await callClaudeCLIWithHeartbeat(
         anthropicApiKey,
         selectedModel.id,
@@ -29777,7 +29768,7 @@ ${result}
         }
       } catch (e) {
         const verifyError = e instanceof Error ? e.message.slice(0, 500) : String(e);
-        core.error(`Commit verification failed: ${verifyError}`);
+        core3.error(`Commit verification failed: ${verifyError}`);
         result += `
 
 **Commit verification failed:** ${verifyError}`;
@@ -29787,7 +29778,7 @@ ${result}
       const rtkPct = r.rtkSavings || "\u2014 %";
       const rtkBypassed = !r.rtkSavings || r.rtkSavings === "0.0%";
       if (rtkBypassed) {
-        core.error(`CRITICAL: RTK savings empty or zero \u2014 RTK was bypassed or tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
+        core3.error(`CRITICAL: RTK savings empty or zero \u2014 RTK was bypassed or tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
         result += `
 
 > \u26A0\uFE0F **RTK bypassed** \u2014 no token savings recorded for this call. Operator: verify hook in \`$HOME/.claude/settings.json\`.`;
@@ -29795,7 +29786,7 @@ ${result}
       const costCap = MAX_COST_USD_BY_TIER2[modelTier] ?? MAX_COST_USD_BY_TIER2.haiku;
       const costOverCap = r.costUsd > costCap;
       if (costOverCap) {
-        core.error(`Cost cap exceeded: $${r.costUsd.toFixed(4)} > $${costCap} (${modelTier})`);
+        core3.error(`Cost cap exceeded: $${r.costUsd.toFixed(4)} > $${costCap} (${modelTier})`);
         result += `
 
 > \u26A0\uFE0F **Cost cap exceeded** for ${modelTier}: $${r.costUsd.toFixed(4)} > $${costCap}. Operator alerted.`;
@@ -29830,21 +29821,23 @@ ${result}
       const newAuditId = latestAuditId(auditDb, sender, `${owner}/${repo}`, issueNumber);
       if (newAuditId != null && commitVerifiedOutcome !== null) {
         try {
-          recordCommitVerification(auditDb, newAuditId, commitVerifiedOutcome);
+          recordAuditQualitySignals(auditDb, newAuditId, commitVerifiedOutcome);
         } catch (e) {
-          core.warning(`Quality link failed: ${e}`);
+          core3.warning(`Quality link failed: ${e}`);
         }
       }
       if (!costOverCap && !rtkBypassed && result.trim()) {
         try {
           storeCachedReply(auditDb, finalPrompt, `${owner}/${repo}`, issueNumber, sender, result, r.costUsd);
         } catch (e) {
-          core.warning(`Cache store failed: ${e}`);
+          core3.warning(`Cache store failed: ${e}`);
         }
       }
     }
-    if (!await commentExists(octokit, owner, repo, replyCommentId)) {
-      core.info("Cancelled");
+    try {
+      await octokit.issues.getComment({ owner, repo, comment_id: replyCommentId });
+    } catch {
+      core3.info("Cancelled");
       return;
     }
     sessionUpdate(auditDb, runId, "responding");
@@ -29861,10 +29854,10 @@ ${result}
 <sub>${footer}</sub>`
     );
     sessionUpdate(auditDb, runId, "completed", { status: "completed" });
-    core.info("Done");
+    core3.info("Done");
   } catch (error2) {
     const msg = error2 instanceof Error ? error2.message : String(error2);
-    core.error(msg);
+    log.error("kai-action failed", { ...errorMeta(error2), message: msg, owner, repo, sender });
     logErrorToSentry(error2, {
       subsystem: "kai-action-run",
       owner,
@@ -29872,7 +29865,7 @@ ${result}
       sender
     });
     try {
-      const db = initAuditDb();
+      const db = initAuditDb(process.env.KAI_AUDIT_DB || "/home/kai/data/kai-audit.db");
       auditLog(db, {
         sender: sender || "unknown",
         repo: owner && repo ? `${owner}/${repo}` : "unknown",
@@ -29907,53 +29900,24 @@ Check runner logs or contact infra team.
           }
         }
       } catch (postErr) {
-        core.error(`Failed to post error to PR: ${postErr}`);
+        core3.error(`Failed to post error to PR: ${postErr}`);
       }
     }
-    core.setFailed(msg);
+    await attemptInfrastructureRecovery(msg);
+    core3.setFailed(msg);
   }
 }
-var MAX_RETRIES = 3;
-function backoffMs(attempt) {
-  return Math.min(1e3 * Math.pow(2, attempt), 4e3);
-}
-async function safeUpdate(o, owner, repo, id, body) {
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      await o.issues.updateComment({ owner, repo, comment_id: id, body });
-      return;
-    } catch (err) {
-      const st = err?.status ?? 0;
-      if (st >= 500 && attempt < MAX_RETRIES - 1) {
-        core.warning(`safeUpdate: GitHub ${st}, retry ${attempt + 1}/${MAX_RETRIES}`);
-        await new Promise((r) => setTimeout(r, backoffMs(attempt)));
-        continue;
-      }
-      core.warning(`safeUpdate failed: ${st}`);
-      return;
-    }
-  }
-}
-async function commentExists(o, owner, repo, id) {
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      await o.issues.getComment({ owner, repo, comment_id: id });
-      return true;
-    } catch (err) {
-      const st = err?.status ?? 0;
-      if (st === 404) return false;
-      if (st >= 500 && attempt < MAX_RETRIES - 1) {
-        core.warning(`commentExists: GitHub ${st}, retry ${attempt + 1}/${MAX_RETRIES} (backoff ${backoffMs(attempt)}ms)`);
-        await new Promise((r) => setTimeout(r, backoffMs(attempt)));
-        continue;
-      }
-      core.warning(`commentExists: unexpected error (${st}), assuming exists`);
-      return true;
-    }
-  }
-  return true;
-}
-run();
+process.on("uncaughtException", (err) => {
+  core3.error(`uncaughtException: ${err instanceof Error ? err.message : String(err)}`);
+});
+process.on("unhandledRejection", (err) => {
+  core3.error(`unhandledRejection: ${err instanceof Error ? err.message : String(err)}`);
+});
+run().catch(async (err) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  await attemptInfrastructureRecovery(msg);
+  core3.setFailed(msg);
+});
 /*! Bundled license information:
 
 undici/lib/fetch/body.js:

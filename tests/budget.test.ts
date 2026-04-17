@@ -5,17 +5,32 @@
 // Every paid call must go through preflightBudget(). These tests lock in the
 // invariants; if they break, the First Law is violated.
 import assert from "node:assert/strict";
-import test from "node:test";
-import {
-  MAX_COST_USD_BY_TIER,
-  MAX_PROMPT_TOKENS,
-  PRICING_USD_PER_MILLION,
-  SHORT_ANSWER_MAX_INPUT_TOKENS,
-  disallowedToolsFor,
-  getMaxTurns,
-  isShortAnswerRequest,
-  preflightBudget,
-} from "../src/budget";
+import test, { before } from "node:test";
+
+import { applyTestEnv } from "./test-env.ts";
+
+applyTestEnv();
+
+let MAX_COST_USD_BY_TIER: Record<string, number>;
+let MAX_PROMPT_TOKENS: number;
+let PRICING_USD_PER_MILLION: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }>;
+let SHORT_ANSWER_MAX_INPUT_TOKENS: number;
+let disallowedToolsFor: typeof import("../dist/budget.js").disallowedToolsFor;
+let getMaxTurns: typeof import("../dist/budget.js").getMaxTurns;
+let isShortAnswerRequest: typeof import("../dist/budget.js").isShortAnswerRequest;
+let preflightBudget: typeof import("../dist/budget.js").preflightBudget;
+
+before(async () => {
+  const budget = await import("../dist/budget.js");
+  MAX_COST_USD_BY_TIER = budget.MAX_COST_USD_BY_TIER;
+  MAX_PROMPT_TOKENS = budget.MAX_PROMPT_TOKENS;
+  PRICING_USD_PER_MILLION = budget.PRICING_USD_PER_MILLION;
+  SHORT_ANSWER_MAX_INPUT_TOKENS = budget.SHORT_ANSWER_MAX_INPUT_TOKENS;
+  disallowedToolsFor = budget.disallowedToolsFor;
+  getMaxTurns = budget.getMaxTurns;
+  isShortAnswerRequest = budget.isShortAnswerRequest;
+  preflightBudget = budget.preflightBudget;
+});
 
 test("isShortAnswerRequest catches the exact phrasing that cost $0.0567", () => {
   assert.equal(isShortAnswerRequest("what is the single biggest risk in this PR? one sentence."), true);

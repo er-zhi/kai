@@ -1,0 +1,16 @@
+export function parseRtkSavings(raw: string): string {
+  const text = raw.trim();
+  if (!text) return "";
+  const percentMatches = [
+    text.match(/\((\d+(?:\.\d+)?)%\)/),
+    text.match(/(?:savings?|saved|gain|improvement|reduction)\D+(\d+(?:\.\d+)?)%/i),
+    text.match(/\b(\d+(?:\.\d+)?)%\b/),
+  ].filter((m): m is RegExpMatchArray => !!m);
+  if (percentMatches.length) return `${percentMatches[0][1]}%`;
+  const decimalMatch = text.match(/\b0\.(\d+)\b/);
+  if (decimalMatch) {
+    const pct = Number(`0.${decimalMatch[1]}`) * 100;
+    if (Number.isFinite(pct) && pct > 0) return `${pct.toFixed(1)}%`;
+  }
+  return "";
+}

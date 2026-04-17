@@ -1,9 +1,14 @@
 // Live compressor roundtrip against a running LFM2-350M server.
 // Proves: grammar-constrained JSON works and compressor returns a shrunk prompt.
-import { compressPromptWithQwen } from "../src/compressor";
+import { compressPromptWithQwen } from "../dist/compressor.js";
+import { applyTestEnv } from "./test-env.ts";
+
+applyTestEnv();
 
 const url = process.env.KAI_COMPRESSOR_URL;
 if (!url) { console.log("SKIP"); process.exit(0); }
+const model = process.env.KAI_COMPRESSOR_MODEL;
+if (!model) { console.error("set KAI_COMPRESSOR_MODEL"); process.exit(1); }
 
 const bigFilesBlock = Array.from({ length: 30 }, (_, i) => `service_${i}.py +${i + 1}/-0`).join("\n");
 const prompt = [
@@ -15,7 +20,7 @@ const prompt = [
 
 (async () => {
   const res = await compressPromptWithQwen(prompt, "review the auth changes", "haiku", {
-    url, model: process.env.KAI_COMPRESSOR_MODEL ?? "LFM2-350M",
+    url, model,
     timeoutMs: 60000,
     budgetByTier: { haiku: 50 }, // force compression
     minPromptTokens: 100,

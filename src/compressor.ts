@@ -1,3 +1,5 @@
+import { isRecord, parseJsonObject } from "./json";
+
 export type CompressionTier = "haiku" | "sonnet" | "opus";
 
 export type CompressionConfig = {
@@ -36,7 +38,7 @@ type CompressorPayload = {
 
 // Lower than before: old budgets (6k/24k/80k) meant compression almost never
 // triggered for typical PR comments. New budgets force compression much earlier
-// so the Qwen3 layer actually pays off. Env vars still override in index.ts.
+// so the local compressor actually pays off. Env vars still override in index.ts.
 const DEFAULT_BUDGETS: Record<CompressionTier, number> = {
   haiku: 3000,
   sonnet: 10000,
@@ -89,37 +91,10 @@ export function splitPromptIntoChunks(prompt: string): PromptChunk[] {
   return chunks;
 }
 
-// Extract first balanced JSON object from a possibly markdown-wrapped response.
-// Small local models (LFM2, SmolLM) often emit ```json\n{...}\n``` + trailing
-// prose even under GBNF grammar. Strip fences and cut at first balanced brace.
-function extractJsonObject(raw: string): string | null {
-  const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const source = fencedMatch ? fencedMatch[1] : raw;
-  const start = source.indexOf("{");
-  if (start < 0) return null;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let i = start; i < source.length; i++) {
-    const ch = source[i];
-    if (escape) { escape = false; continue; }
-    if (ch === "\\") { escape = true; continue; }
-    if (ch === "\"") { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) return source.slice(start, i + 1);
-    }
-  }
-  return null;
-}
-
 function parseCompressorPayload(raw: string, maxChunkId: number): CompressorPayload {
   let parsed: unknown;
-  const jsonSource = extractJsonObject(raw) ?? raw.trim();
   try {
-    parsed = JSON.parse(jsonSource);
+    parsed = parseJsonObject(raw);
   } catch {
     if (process.env.KAI_DEBUG_COMPRESSOR === "1") {
       console.error("[kai-compressor] raw response (first 400 chars):", raw.slice(0, 400));
@@ -127,7 +102,7 @@ function parseCompressorPayload(raw: string, maxChunkId: number): CompressorPayl
     throw new LocalCompressorUnavailableError("local compressor returned invalid JSON");
   }
 
-  if (!parsed || typeof parsed !== "object") {
+  if (!isRecord(parsed)) {
     throw new LocalCompressorUnavailableError("local compressor returned non-object payload");
   }
 
@@ -235,16 +210,18 @@ export async function compressPromptWithQwen(
   modelTier: string,
   config?: CompressionConfig,
 ): Promise<CompressionResult> {
+  if (!config?.model) throw new LocalCompressorUnavailableError("KAI_COMPRESSOR_MODEL is required");
+  if (config.timeoutMs == null) throw new LocalCompressorUnavailableError("KAI_COMPRESSOR_TIMEOUT_MS is required");
   const started = Date.now();
   const rawTokens = estimateTokens(prompt);
   const queryTokens = estimateTokens(userMessage);
   const budget = resolveCompressionBudget(modelTier, config?.budgetByTier);
   const minPromptTokens = resolveNonNegativeInt(
-    config?.minPromptTokens ?? Number(process.env.KAI_COMPRESSOR_MIN_PROMPT_TOKENS || MIN_PROMPT_TOKENS),
+    config?.minPromptTokens,
     MIN_PROMPT_TOKENS,
   );
   const minQueryTokens = resolveNonNegativeInt(
-    config?.minQueryTokens ?? Number(process.env.KAI_COMPRESSOR_MIN_QUERY_TOKENS || 0),
+    config?.minQueryTokens,
     0,
   );
 
@@ -271,54 +248,49 @@ export async function compressPromptWithQwen(
     throw new LocalCompressorUnavailableError("compression required but prompt has no compressible chunks");
   }
 
-  const url = config?.url ?? process.env.KAI_COMPRESSOR_URL;
+  const url = config?.url;
   if (!url) {
     throw new LocalCompressorUnavailableError("compression required but missing KAI_COMPRESSOR_URL");
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config?.timeoutMs ?? Number(process.env.KAI_COMPRESSOR_TIMEOUT_MS || 1500));
-  try {
-    const response = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: config?.model ?? process.env.KAI_COMPRESSOR_MODEL ?? "LFM2-350M",
-        messages: compressorMessages(userMessage, chunks),
-        stream: false,
-        temperature: 0,
-        // Enough for ~200 integer ids + a few summaries; model stops at closing
-        // brace so unused tokens are free.
-        max_tokens: 1024,
-        response_format: COMPRESSOR_RESPONSE_FORMAT,
-      }),
-      signal: controller.signal,
-    });
+  const signal = AbortSignal.timeout(config.timeoutMs);
+  const response = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: config.model,
+      messages: compressorMessages(userMessage, chunks),
+      stream: false,
+      temperature: 0,
+      // Enough for ~200 integer ids + a few summaries; model stops at closing
+      // brace so unused tokens are free.
+      max_tokens: 1024,
+      response_format: COMPRESSOR_RESPONSE_FORMAT,
+    }),
+    signal,
+  });
 
-    if (!response.ok) {
-      throw new LocalCompressorUnavailableError(`local compressor returned HTTP ${response.status}`);
-    }
-
-    const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const content = body.choices?.[0]?.message?.content ?? "";
-    const parsed = parseCompressorPayload(content, chunks.length);
-    const merged = mergeCompressedChunks(chunks, parsed);
-    if (!merged.trim()) {
-      throw new LocalCompressorUnavailableError("local compressor returned empty merged prompt");
-    }
-    const compressedTokens = estimateTokens(merged);
-
-    return {
-      prompt: compressedTokens >= rawTokens ? prompt : merged,
-      metrics: {
-        rawTokens,
-        compressedTokens: compressedTokens >= rawTokens ? rawTokens : compressedTokens,
-        cmpPct: compressedTokens >= rawTokens ? 0 : Math.max(0, Math.round((1 - (compressedTokens / rawTokens)) * 100)),
-        durationMs: Date.now() - started,
-        usedModel: true,
-      },
-    };
-  } finally {
-    clearTimeout(timeout);
+  if (!response.ok) {
+    throw new LocalCompressorUnavailableError(`local compressor returned HTTP ${response.status}`);
   }
+
+  const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const content = body.choices?.[0]?.message?.content ?? "";
+  const parsed = parseCompressorPayload(content, chunks.length);
+  const merged = mergeCompressedChunks(chunks, parsed);
+  if (!merged.trim()) {
+    throw new LocalCompressorUnavailableError("local compressor returned empty merged prompt");
+  }
+  const compressedTokens = estimateTokens(merged);
+
+  return {
+    prompt: compressedTokens >= rawTokens ? prompt : merged,
+    metrics: {
+      rawTokens,
+      compressedTokens: compressedTokens >= rawTokens ? rawTokens : compressedTokens,
+      cmpPct: compressedTokens >= rawTokens ? 0 : Math.max(0, Math.round((1 - (compressedTokens / rawTokens)) * 100)),
+      durationMs: Date.now() - started,
+      usedModel: true,
+    },
+  };
 }

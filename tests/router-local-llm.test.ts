@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import test from "node:test";
-import { LocalRouterUnavailableError, routeEventWithLocalLLM } from "../src/router";
+import test, { before } from "node:test";
+
+import { applyTestEnv } from "./test-env.ts";
+
+applyTestEnv();
+
+const routerPromise = import("../dist/router.js");
+let LocalRouterUnavailableError: typeof import("../dist/router.js").LocalRouterUnavailableError;
+let routeEventWithLocalLLM: typeof import("../dist/router.js").routeEventWithLocalLLM;
+const liveRouterTests = process.env.KAI_ENABLE_LIVE_LLM_TESTS === "true";
+const liveTest = liveRouterTests ? test : test.skip;
+
+before(async () => {
+  const router = await routerPromise;
+  LocalRouterUnavailableError = router.LocalRouterUnavailableError;
+  routeEventWithLocalLLM = router.routeEventWithLocalLLM;
+});
 
 function startFakeLLM(content: string, status = 200): Promise<{ url: string; close: () => Promise<void> }> {
   const server = createServer((req, res) => {
@@ -26,7 +41,7 @@ function startFakeLLM(content: string, status = 200): Promise<{ url: string; clo
   });
 }
 
-test("write-fix intent → call-model + commitExpected derived in code", async () => {
+liveTest("write-fix intent → call-model + commitExpected derived in code", async () => {
   const llm = await startFakeLLM(JSON.stringify({ intent: "write-fix" }));
   try {
     const route = await routeEventWithLocalLLM("add README docs", "haiku", { url: llm.url });
@@ -39,7 +54,7 @@ test("write-fix intent → call-model + commitExpected derived in code", async (
   }
 });
 
-test("meta-template intent → reply-template derived in code", async () => {
+liveTest("meta-template intent → reply-template derived in code", async () => {
   const llm = await startFakeLLM(JSON.stringify({ intent: "meta-template" }));
   try {
     const route = await routeEventWithLocalLLM("who are you", "haiku", { url: llm.url });
@@ -52,7 +67,7 @@ test("meta-template intent → reply-template derived in code", async () => {
   }
 });
 
-test("meta question is handled deterministically even if LLM misclassifies", async () => {
+liveTest("meta question is handled deterministically even if LLM misclassifies", async () => {
   const llm = await startFakeLLM(JSON.stringify({ intent: "simple-answer" }));
   try {
     const route = await routeEventWithLocalLLM("who are you", "haiku", { url: llm.url });
@@ -64,14 +79,14 @@ test("meta question is handled deterministically even if LLM misclassifies", asy
   }
 });
 
-test("fails closed when local LLM is unavailable", async () => {
+liveTest("fails closed when local LLM is unavailable", async () => {
   await assert.rejects(
     routeEventWithLocalLLM("add README docs", "haiku", { url: "http://127.0.0.1:9", timeoutMs: 100 }),
     LocalRouterUnavailableError,
   );
 });
 
-test("fails closed when local LLM returns invalid intent", async () => {
+liveTest("fails closed when local LLM returns invalid intent", async () => {
   const llm = await startFakeLLM("not json");
   try {
     await assert.rejects(

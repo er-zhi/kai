@@ -8,7 +8,7 @@ import {
   recordGroundedScore,
   detectAndRecordFollowup,
   qualityStats,
-} from "../src/quality";
+} from "../dist/quality.js";
 
 function setup(): DatabaseSync {
   const db = new DatabaseSync(":memory:");

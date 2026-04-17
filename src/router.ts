@@ -1,21 +1,6 @@
-export type RouterIntent =
-  | "ignore" | "stop" | "meta-template" | "needs-input" | "simple-answer"
-  | "review" | "write-fix" | "commit-write" | "job-candidate"
-  | "alert" | "spam-abuse" | "unsupported";
-
-export type RouterDecision = {
-  intent: RouterIntent;
-  decision: "ignore" | "stop" | "reply-template" | "ask-clarification" | "call-model";
-  confidence: number;
-  modelTier: string;
-  estimatedTokens: number;
-  estimatedCostUsd: number;
-  reason: string;
-  normalizedMessage: string;
-  maxContextTokens: number;
-  commitExpected: boolean;
-  source?: "rules" | "local-llm";
-};
+export type { RouterDecision, RouterIntent } from "./types";
+import type { ModelTier, RouterDecision, RouterIntent } from "./types";
+import { isRecord, parseJsonObject } from "./json";
 
 export function normalizeWhitespace(message: string): string {
   return message.replace(/\s+/g, " ").trim();
@@ -88,7 +73,7 @@ export function routeEvent(rawMessage: string, modelTier: string): RouterDecisio
 }
 
 const ROUTER_INTENTS: RouterIntent[] = [
-  "ignore", "stop", "meta-template", "needs-input", "simple-answer",
+  "stop", "meta-template", "needs-input", "simple-answer",
   "review", "write-fix", "commit-write", "job-candidate",
   "alert", "spam-abuse", "unsupported",
 ];
@@ -97,7 +82,6 @@ const ROUTER_INTENTS: RouterIntent[] = [
 function decisionForIntent(intent: RouterIntent): RouterDecision["decision"] {
   switch (intent) {
     case "stop": return "stop";
-    case "ignore": case "unsupported": return "ignore";
     case "meta-template": case "spam-abuse": return "reply-template";
     case "needs-input": return "ask-clarification";
     default: return "call-model";
@@ -115,36 +99,17 @@ export class LocalRouterUnavailableError extends Error {
   }
 }
 
-// Tolerate markdown-wrapped / trailing-prose responses from small local models.
-function extractJsonObject(raw: string): string | null {
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const source = fenced ? fenced[1] : raw;
-  const start = source.indexOf("{");
-  if (start < 0) return null;
-  let depth = 0, inStr = false, esc = false;
-  for (let i = start; i < source.length; i++) {
-    const ch = source[i];
-    if (esc) { esc = false; continue; }
-    if (ch === "\\") { esc = true; continue; }
-    if (ch === "\"") { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (ch === "{") depth++;
-    else if (ch === "}") { depth--; if (depth === 0) return source.slice(start, i + 1); }
-  }
-  return null;
-}
-
 function parseIntentOnly(raw: string): RouterIntent | null {
   try {
-    const candidate = extractJsonObject(raw) ?? raw;
-    const parsed = JSON.parse(candidate) as { intent?: string };
+    const parsed = parseJsonObject(raw);
+    if (!isRecord(parsed) || typeof parsed.intent !== "string") return null;
     return ROUTER_INTENTS.includes(parsed.intent as RouterIntent) ? (parsed.intent as RouterIntent) : null;
   } catch {
     return null;
   }
 }
 
-export type SuggestedTier = "haiku" | "sonnet" | "opus";
+export type SuggestedTier = ModelTier;
 const TIER_VALUES: readonly SuggestedTier[] = ["haiku", "sonnet", "opus"];
 
 const TIER_RESPONSE_FORMAT = {
@@ -160,14 +125,15 @@ export async function suggestTierWithLocalLLM(
   message: string,
   options: { url: string; model?: string; timeoutMs?: number },
 ): Promise<SuggestedTier | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 2000);
+  if (!options.model) throw new Error("KAI_ROUTER_MODEL is required");
+  if (options.timeoutMs == null) throw new Error("KAI_ROUTER_TIMEOUT_MS is required");
+  const signal = AbortSignal.timeout(options.timeoutMs);
   try {
     const res = await fetch(`${options.url.replace(/\/$/, "")}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: options.model ?? "LFM2-350M",
+        model: options.model,
         messages: [{
           role: "user",
           content: `Pick model tier for this task. haiku=simple Q/A, small edits. sonnet=multi-file refactor, code review, bug fix requiring reasoning. opus=architecture decisions, complex cross-service changes.\nTask: ${JSON.stringify(message)}\nReturn {"tier":"haiku"} or {"tier":"sonnet"} or {"tier":"opus"}.`,
@@ -177,20 +143,18 @@ export async function suggestTierWithLocalLLM(
         max_tokens: 20,
         response_format: TIER_RESPONSE_FORMAT,
       }),
-      signal: controller.signal,
+      signal,
     });
     if (!res.ok) return null;
     const body = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
     const content = body.choices?.[0]?.message?.content ?? "";
     try {
-      const candidate = extractJsonObject(content) ?? content;
-      const parsed = JSON.parse(candidate) as { tier?: string };
+      const parsed = parseJsonObject(content);
+      if (!isRecord(parsed) || typeof parsed.tier !== "string") return null;
       return TIER_VALUES.includes(parsed.tier as SuggestedTier) ? parsed.tier as SuggestedTier : null;
     } catch { return null; }
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -202,7 +166,7 @@ type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 function localRouterMessages(message: string): ChatMessage[] {
   return [{
     role: "user",
-    content: `Classify PR comment. Intents: simple-answer|review|write-fix|commit-write|job-candidate|meta-template|spam-abuse|needs-input|stop|alert|unsupported|ignore.
+    content: `Classify PR comment. Intents: simple-answer|review|write-fix|commit-write|job-candidate|meta-template|spam-abuse|needs-input|stop|alert|unsupported.
 Rules: "stop"→stop; "who are you"/help→meta-template; weather/music/jokes→spam-abuse; empty/vague→needs-input; "commit"/"push"→commit-write; imperative add/fix/update→write-fix; review/bug/risk→review; question→simple-answer.
 Return {"intent":"..."}.
 Comment: ${JSON.stringify(message)}`,
@@ -229,33 +193,28 @@ const ROUTER_RESPONSE_FORMAT = {
 async function callRouterOnce(
   url: string, model: string, messages: ChatMessage[], timeoutMs: number,
 ): Promise<RouterIntent> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model, messages, stream: false, temperature: 0, max_tokens: 40,
-        response_format: ROUTER_RESPONSE_FORMAT,
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new LocalRouterUnavailableError(`HTTP ${res.status}`);
-    const body = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const content = body.choices?.[0]?.message?.content ?? "";
-    const intent = parseIntentOnly(content);
-    if (!intent) throw new LocalRouterUnavailableError("invalid intent payload");
-    return intent;
-  } finally {
-    clearTimeout(timeout);
-  }
+  const signal = AbortSignal.timeout(timeoutMs);
+  const res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model, messages, stream: false, temperature: 0, max_tokens: 40,
+      response_format: ROUTER_RESPONSE_FORMAT,
+    }),
+    signal,
+  });
+  if (!res.ok) throw new LocalRouterUnavailableError(`HTTP ${res.status}`);
+  const body = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const content = body.choices?.[0]?.message?.content ?? "";
+  const intent = parseIntentOnly(content);
+  if (!intent) throw new LocalRouterUnavailableError("invalid intent payload");
+  return intent;
 }
 
 export async function routeEventWithLocalLLM(
   rawMessage: string,
   modelTier: string,
-  options?: { url?: string; model?: string; timeoutMs?: number; allowRulesOnly?: boolean },
+  options?: { url?: string; model?: string; timeoutMs?: number },
 ): Promise<RouterDecision> {
   const rules = routeEvent(rawMessage, modelTier);
 
@@ -264,12 +223,14 @@ export async function routeEventWithLocalLLM(
 
   const url = options?.url ?? process.env.KAI_ROUTER_URL;
   if (!url) {
-    if (options?.allowRulesOnly) return rules;
     throw new LocalRouterUnavailableError("local router URL is required before paid model calls");
   }
 
-  const model = options?.model ?? process.env.KAI_ROUTER_MODEL ?? "LFM2-350M";
-  const timeoutMs = options?.timeoutMs ?? 3000;
+  if (!options) throw new LocalRouterUnavailableError("router options are required");
+  const model = options.model;
+  if (!model) throw new LocalRouterUnavailableError("KAI_ROUTER_MODEL is required");
+  if (options.timeoutMs == null) throw new Error("router timeout is required");
+  const timeoutMs = options.timeoutMs;
   const messages = localRouterMessages(rules.normalizedMessage);
   const started = Date.now();
 

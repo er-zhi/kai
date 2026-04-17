@@ -1,2 +1,8 @@
 node_modules/
+dist/
 .claude-flow/
+.env
+.env.local
+*.log
+.DS_Store
+tmp/

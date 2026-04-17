@@ -6,8 +6,8 @@ Manual regression test plan for the `er-zhi/kai@v1` GitHub Action. Designed so a
 
 1. Open any PR in a repo that has `.github/workflows/kai.yml` using `er-zhi/kai@v1`.
 2. Make sure the self-hosted runner is online and both local LLM servers are up:
-   - Router at `http://localhost:11434/health` → `{"status":"ok"}`
-   - Compressor at `http://localhost:11435/health` → `{"status":"ok"}`
+   - Router at `http://localhost:21434/health` → `{"status":"ok"}`
+   - Compressor at `http://localhost:21435/health` → `{"status":"ok"}`
 3. Keep the Actions tab open in a second browser window.
 4. For each test below:
    - Post the comment **exactly as written**.
@@ -122,6 +122,6 @@ Copy this into a new issue comment on the PR when done:
 |--------------------------------------------------|------------------------------------------------------------|--------------------------------------------------------------------------------|
 | Reply has `⚠️ RTK bypassed`                      | RTK hook not in `~/.claude/settings.json` on the runner     | Runner logs; set `KAI_RTK_HOOK_SKIP_CHECK=true` to override during triage      |
 | Workflow fails with `local router URL is required` | `router_url` input missing from `kai.yml`                  | `.github/workflows/kai.yml` inputs                                             |
-| `⛔ Rate limit hit`                               | Too many calls in an hour (defaults: 20/sender, 120/repo)   | `KAI_RATE_LIMIT_*` env vars on the runner                                      |
+| `⛔ Rate limit hit`                               | Too many calls in an hour (configured via env)              | `KAI_RATE_LIMIT_*` env vars on the runner                                      |
 | Reply: `error_max_turns`                         | Task needed more turns than `getMaxTurns()` granted         | Rephrase or add `use sonnet` (also increase `max_turns` in `src/index.ts`)     |
 | `completed-cost-over-cap` in audit log           | Call spent more than tier cap                               | `KAI_MAX_COST_USD_HAIKU/SONNET/OPUS` env                                        |

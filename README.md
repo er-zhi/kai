@@ -10,7 +10,7 @@ AI engineering agent for GitHub. Mention `@kai` in any PR comment to trigger.
 2. **We do not pay for errors.** `max_turns` is set so that on a max-turns failure the spend is still within the tier ceiling. For `short-answer` intents it is 2 turns with every exploration tool disabled — the model cannot burn tokens exploring.
 3. **Every code path that hits Claude must go through the stable-prefix prompt builder** so Anthropic's cache can hit. A cache-miss run on a known-stable PR is a bug.
 4. **The footer is load-bearing** — every reply advertises input, output, cost, cache hit, RTK savings and turns. If you can't see the footer, you don't merge the change.
-5. **Short-answer requests have a hard prompt ceiling** (`KAI_SHORT_ANSWER_MAX_INPUT_TOKENS`, default 6000). A bigger prompt is not allowed to enter Claude under the short-answer label — we redirect to full review tier instead.
+5. **Short-answer requests have a hard prompt ceiling** (`KAI_SHORT_ANSWER_MAX_INPUT_TOKENS`). A bigger prompt is not allowed to enter Claude under the short-answer label — we redirect to full review tier instead.
 6. **Hooks are mandatory.** RTK savings == 0% means the hook isn't active; treat that as an incident, not a metric to log and move on.
 7. **Operator escalation beats quiet spending.** If we can't honor the contract (router dead, compose missing, docker.sock not readable), we return a refusal reply with a one-line operator action. We don't "try harder" by re-hitting the paid API.
 
@@ -57,7 +57,7 @@ jobs:
         with:
           github_token: ${{ steps.kai-token.outputs.token }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          router_url: http://localhost:11434
+          router_url: http://localhost:21434
           router_model: LFM2-350M
 ```
 
@@ -80,7 +80,7 @@ docker compose -f docker-compose.router.yml run --rm kai-compressor-pull
 docker compose -f docker-compose.router.yml up -d kai-router-llm kai-compressor-llm
 ```
 
-Keep `router_url` pointed at `http://localhost:11434`. Default classifier is `LFM2-350M` (Q4_0 gguf, ~220 MB, ~2x faster on CPU than Qwen3 per Liquid AI benchmarks).
+Keep `router_url` pointed at `http://localhost:21434`. Classifier is `LFM2-350M` (Q4_0 gguf, ~220 MB, optimized for the small local router path).
 
 **Self-healing:** if the containers crash between runs, Kai now probes `/health` at action start and runs `docker compose up -d kai-router-llm kai-compressor-llm` itself when it finds them down. Requires the compose file at one of: `$KAI_COMPOSE_FILE`, `/home/kai/kai-router/docker-compose.router.yml`, or `$HOME/kai-router/docker-compose.router.yml`, and the runner user in the `docker` group. Disable with `KAI_LLM_AUTOSTART=false`.
 

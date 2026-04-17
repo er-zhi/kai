@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isMetaQuestion, normalizeWhitespace, routeEvent, shouldVerifyCommit } from "../src/router";
+import { isMetaQuestion, normalizeWhitespace, routeEvent, shouldVerifyCommit } from "../dist/router.js";
 
 test("normalizes whitespace", () => {
   assert.equal(normalizeWhitespace("  add   README\n sentence\t now  "), "add README sentence now");

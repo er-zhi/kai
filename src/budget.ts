@@ -10,11 +10,19 @@ export const PRICING_USD_PER_MILLION: Record<string, { input: number; output: nu
   opus: { input: 15.0, output: 75.0, cacheWrite: 18.75, cacheRead: 1.50 },
 };
 
+function requiredNumberEnv(name: string): number {
+  const raw = process.env[name];
+  if (!raw || !raw.trim()) throw new Error(`Missing required env: ${name}`);
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`Invalid number for ${name}: ${raw}`);
+  return value;
+}
+
 // Per-tier ceiling: any run projected above this must be refused pre-flight.
 export const MAX_COST_USD_BY_TIER: Record<string, number> = {
-  haiku: Number(process.env.KAI_MAX_COST_USD_HAIKU || 0.05),
-  sonnet: Number(process.env.KAI_MAX_COST_USD_SONNET || 0.50),
-  opus: Number(process.env.KAI_MAX_COST_USD_OPUS || 2.00),
+  haiku: requiredNumberEnv("KAI_MAX_COST_USD_HAIKU"),
+  sonnet: requiredNumberEnv("KAI_MAX_COST_USD_SONNET"),
+  opus: requiredNumberEnv("KAI_MAX_COST_USD_OPUS"),
 };
 
 export function isShortAnswerRequest(message: string): boolean {
@@ -40,8 +48,8 @@ export function disallowedToolsFor(userMessage: string): string[] {
 }
 
 // Hard prompt ceilings. Per-tier AND short-answer-specific.
-export const MAX_PROMPT_TOKENS = Number(process.env.KAI_MAX_PROMPT_TOKENS || 50_000);
-export const SHORT_ANSWER_MAX_INPUT_TOKENS = Number(process.env.KAI_SHORT_ANSWER_MAX_INPUT_TOKENS || 6000);
+export const MAX_PROMPT_TOKENS = requiredNumberEnv("KAI_MAX_PROMPT_TOKENS");
+export const SHORT_ANSWER_MAX_INPUT_TOKENS = requiredNumberEnv("KAI_SHORT_ANSWER_MAX_INPUT_TOKENS");
 
 export type PreflightDecision =
   | { allowed: true }

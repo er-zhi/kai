@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildFooter, buildRouterFooter } from "../src/footer";
+import { buildFooter, buildRouterFooter } from "../dist/footer.js";
 
 test("router footer explicitly marks local LLM", () => {
   const footer = buildRouterFooter("LFM2-350M", 1);
