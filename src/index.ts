@@ -713,9 +713,9 @@ async function run() {
 
       const durationMs = Date.now() - startTime;
       const rtkPct = r.rtkSavings || "— %";
-      const rtkBypassed = !r.rtkSavings || r.rtkSavings === "0.0%";
+      const rtkBypassed = r.rtkSavings === "0.0%"; // Only warn if explicitly zero, not if unavailable
       if (rtkBypassed) {
-        core.error(`CRITICAL: RTK savings empty or zero — RTK was bypassed or tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
+        core.error(`CRITICAL: RTK savings = 0% — RTK was bypassed or tracking is broken. Check /home/kai/.local/share/rtk/history.db`);
         result += `\n\n> ⚠️ **RTK bypassed** — no token savings recorded for this call. Operator: verify hook in \`$HOME/.claude/settings.json\`.`;
       }
       const costCap = MAX_COST_USD_BY_TIER[modelTier] ?? MAX_COST_USD_BY_TIER.haiku;
@@ -733,7 +733,7 @@ async function run() {
 
       const finalStatus = costOverCap
         ? "completed-cost-over-cap"
-        : rtkBypassed ? "completed-rtk-bypass" : "completed";
+        : r.rtkSavings === "0.0%" ? "completed-rtk-bypass" : "completed";
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
         model: selectedModel.label, message: rawMessage, durationMs,
