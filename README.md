@@ -18,7 +18,7 @@ AI engineering agent for GitHub. Mention `@kai` in any PR comment to trigger.
 
 ### 1. Install the Kai GitHub App
 
-[Install kai-kodif](https://github.com/apps/kai-kodif) on your repository.
+[Install kodif-ai](https://github.com/apps/kodif-ai) on your repository.
 
 ### 2. Add secrets to your repo
 
