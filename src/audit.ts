@@ -1,8 +1,6 @@
 import * as core from "@actions/core";
 import { DatabaseSync } from "node:sqlite";
 import type { RouterDecision } from "./types";
-import { ensureCacheSchema } from "./cache";
-import { ensureQualitySchema, detectAndRecordFollowup, recordCacheHit, recordCommitVerification } from "./quality";
 
 export type RateLimitCheck = { allowed: boolean; reason?: string };
 export type RateLimitOptions = { includeCostBudget?: boolean };
@@ -30,34 +28,6 @@ export type RouterDecisionLogInput = {
   commentId: number;
   sender: string;
   route: RouterDecision;
-};
-
-export type ContextOptimizationLogInput = {
-  repo: string;
-  prNumber: number;
-  runId: string;
-  modelTier: string;
-  rawPromptTokens: number;
-  compressedPromptTokens: number;
-  cmpPct: number;
-  usedModel: boolean;
-  durationMs: number;
-};
-
-export type SessionStartInput = {
-  runId: string;
-  repo: string;
-  prNumber: number;
-  sender: string;
-  commentId: number;
-  model: string;
-};
-
-export type SessionUpdateInput = {
-  replyCommentId?: number;
-  attempt?: number;
-  status?: string;
-  error?: string;
 };
 
 const DEFAULT_RATE_LIMIT_SENDER_PER_HOUR = 20;
@@ -115,19 +85,6 @@ export function initAuditDb(dbPath: string): DatabaseSync {
       estimated_cost_usd REAL NOT NULL,
       reason TEXT
     );
-    CREATE TABLE IF NOT EXISTS context_optimizer_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-      repo TEXT NOT NULL,
-      pr_number INTEGER NOT NULL,
-      run_id TEXT NOT NULL,
-      model_tier TEXT NOT NULL,
-      raw_prompt_tokens INTEGER NOT NULL,
-      compressed_prompt_tokens INTEGER NOT NULL,
-      cmp_pct INTEGER NOT NULL,
-      used_model INTEGER NOT NULL,
-      duration_ms INTEGER NOT NULL
-    );
     CREATE TABLE IF NOT EXISTS rate_limits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp TEXT NOT NULL DEFAULT (datetime('now')),
@@ -139,19 +96,7 @@ export function initAuditDb(dbPath: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_rate_limits_sender_ts ON rate_limits(sender, timestamp);
     CREATE INDEX IF NOT EXISTS idx_rate_limits_repo_ts ON rate_limits(repo, timestamp)
   `);
-  ensureCacheSchema(db);
-  ensureQualitySchema(db);
   return db;
-}
-
-export function latestAuditId(db: DatabaseSync, sender: string, repoFull: string, prNumber: number): number | null {
-  try {
-    const row = db.prepare(
-      `SELECT id FROM audit_log WHERE sender = ? AND repo = ? AND pr_number = ?
-       ORDER BY id DESC LIMIT 1`,
-    ).get(sender, repoFull, prNumber) as { id?: number } | undefined;
-    return row?.id ?? null;
-  } catch { return null; }
 }
 
 export function checkRateLimit(
@@ -201,28 +146,6 @@ export function recordRateLimit(db: DatabaseSync | null, sender: string, repoFul
   } catch (e) { core.warning(`Rate-limit record failed: ${e}`); }
 }
 
-export function sessionStart(db: DatabaseSync, data: SessionStartInput): void {
-  try {
-    db.prepare(`INSERT OR REPLACE INTO sessions (run_id, repo, pr_number, sender, comment_id, model, status, phase)
-      VALUES (?, ?, ?, ?, ?, ?, 'running', 'init')`).run(
-      data.runId, data.repo, data.prNumber, data.sender, data.commentId, data.model);
-  } catch (e) { core.warning(`Session start failed: ${e}`); }
-}
-
-export function sessionUpdate(db: DatabaseSync, runId: string, phase: string, extra?: SessionUpdateInput): void {
-  try {
-    const sets = [`phase = ?`, `last_heartbeat = datetime('now')`];
-    const params: Array<string | number> = [phase];
-    if (extra?.replyCommentId) { sets.push(`reply_comment_id = ?`); params.push(extra.replyCommentId); }
-    if (extra?.attempt) { sets.push(`attempt = ?`); params.push(extra.attempt); }
-    if (extra?.status) { sets.push(`status = ?`); params.push(extra.status); }
-    if (extra?.error) { sets.push(`error = ?`); params.push(extra.error); }
-    if (extra?.status === "completed" || extra?.status === "failed") { sets.push(`finished_at = datetime('now')`); }
-    params.push(runId);
-    db.prepare(`UPDATE sessions SET ${sets.join(", ")} WHERE run_id = ?`).run(...params);
-  } catch (e) { core.warning(`Session update failed: ${e}`); }
-}
-
 export function auditLog(db: DatabaseSync, data: AuditLogInput): void {
   try {
     db.prepare(`
@@ -253,50 +176,4 @@ export function logRouterDecision(db: DatabaseSync, data: RouterDecisionLogInput
   } catch (e) {
     core.warning(`Router decision log failed: ${e}`);
   }
-}
-
-export function logContextOptimization(db: DatabaseSync, data: ContextOptimizationLogInput): void {
-  try {
-    db.prepare(`
-      INSERT INTO context_optimizer_log (repo, pr_number, run_id, model_tier, raw_prompt_tokens, compressed_prompt_tokens, cmp_pct, used_model, duration_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      data.repo,
-      data.prNumber,
-      data.runId,
-      data.modelTier,
-      data.rawPromptTokens,
-      data.compressedPromptTokens,
-      data.cmpPct,
-      data.usedModel ? 1 : 0,
-      data.durationMs,
-    );
-  } catch (e) {
-    core.warning(`Context optimization log failed: ${e}`);
-  }
-}
-
-export function latestFollowupAuditId(db: DatabaseSync, sender: string, repo: string, prNumber: number): number | null {
-  const row = db.prepare(
-    `SELECT id FROM audit_log
-     WHERE sender = ? AND repo = ? AND pr_number = ?
-       AND status IN ('completed','completed-rtk-bypass','completed-cost-over-cap')
-       AND timestamp >= datetime('now', '-15 minutes')
-       AND timestamp < datetime('now', '-5 seconds')
-     ORDER BY timestamp DESC LIMIT 1`,
-  ).get(sender, repo, prNumber) as { id?: number } | undefined;
-  return row?.id ?? null;
-}
-
-export function detectAndRecordFollowupAudit(db: DatabaseSync, sender: string, repo: string, prNumber: number): { previousAuditId: number | null } {
-  const id = detectAndRecordFollowup(db, sender, repo, prNumber).previousAuditId;
-  return { previousAuditId: id };
-}
-
-export function recordAuditQualitySignals(db: DatabaseSync, auditId: number, commitVerified: boolean): void {
-  recordCommitVerification(db, auditId, commitVerified);
-}
-
-export function recordAuditCacheHit(db: DatabaseSync, auditId: number): void {
-  recordCacheHit(db, auditId);
 }

@@ -27904,43 +27904,6 @@ function templateForRoute(route) {
 // src/audit.ts
 var core = __toESM(require_core());
 var import_node_sqlite = require("node:sqlite");
-
-// src/cache.ts
-function ensureCacheSchema(db) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS response_cache (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      prompt_hash TEXT NOT NULL,
-      repo TEXT NOT NULL,
-      pr_number INTEGER NOT NULL,
-      sender TEXT NOT NULL,
-      reply TEXT NOT NULL,
-      cost_usd REAL NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_cache_hash ON response_cache(prompt_hash, repo, pr_number);
-    CREATE INDEX IF NOT EXISTS idx_cache_ts ON response_cache(created_at);
-  `);
-}
-
-// src/quality.ts
-function ensureQualitySchema(db) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS response_quality (
-      audit_id INTEGER PRIMARY KEY,
-      reactions_pos INTEGER DEFAULT 0,
-      reactions_neg INTEGER DEFAULT 0,
-      followup_15min INTEGER DEFAULT 0,
-      commit_verified INTEGER,
-      llm_grounded_score INTEGER,
-      cache_hit INTEGER DEFAULT 0,
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_quality_updated ON response_quality(updated_at);
-  `);
-}
-
-// src/audit.ts
 var DEFAULT_RATE_LIMIT_SENDER_PER_HOUR = 20;
 var DEFAULT_RATE_LIMIT_REPO_PER_HOUR = 100;
 var DEFAULT_RATE_LIMIT_SENDER_COST_PER_DAY = 0.25;
@@ -27995,19 +27958,6 @@ function initAuditDb(dbPath) {
       estimated_cost_usd REAL NOT NULL,
       reason TEXT
     );
-    CREATE TABLE IF NOT EXISTS context_optimizer_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-      repo TEXT NOT NULL,
-      pr_number INTEGER NOT NULL,
-      run_id TEXT NOT NULL,
-      model_tier TEXT NOT NULL,
-      raw_prompt_tokens INTEGER NOT NULL,
-      compressed_prompt_tokens INTEGER NOT NULL,
-      cmp_pct INTEGER NOT NULL,
-      used_model INTEGER NOT NULL,
-      duration_ms INTEGER NOT NULL
-    );
     CREATE TABLE IF NOT EXISTS rate_limits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp TEXT NOT NULL DEFAULT (datetime('now')),
@@ -28019,8 +27969,6 @@ function initAuditDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_rate_limits_sender_ts ON rate_limits(sender, timestamp);
     CREATE INDEX IF NOT EXISTS idx_rate_limits_repo_ts ON rate_limits(repo, timestamp)
   `);
-  ensureCacheSchema(db);
-  ensureQualitySchema(db);
   return db;
 }
 function checkRateLimit(db, sender, repoFull, options = {}) {
@@ -28187,17 +28135,7 @@ function parseLogLevel(raw) {
 }
 
 // src/config.ts
-var COMPRESSOR_TIMEOUT_MS = 1500;
-var COMPRESSOR_MIN_QUERY_TOKENS = 10;
-var COMPRESSOR_MIN_PROMPT_TOKENS = 500;
-var COMPRESSOR_BUDGET_HAIKU = 3e3;
-var COMPRESSOR_BUDGET_SONNET = 1e4;
-var COMPRESSOR_BUDGET_OPUS = 2e4;
 var ROUTER_TIMEOUT_MS = 5e3;
-var DEFAULT_CLAUDE_SETTINGS_PATH = "/home/kai/.claude/settings.json";
-var DEFAULT_RTK_HOOK_SKIP_CHECK = false;
-var DEFAULT_TIER_SUGGEST_DISABLE = false;
-var DEFAULT_DEBUG_COMPRESSOR = false;
 function env(name) {
   const value = process.env[name];
   if (!value || !value.trim()) throw new Error(`Missing required env: ${name}`);
@@ -28207,60 +28145,10 @@ function optEnv(name) {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : null;
 }
-function bool(name) {
-  const rawMaybe = process.env[name];
-  if (!rawMaybe || !rawMaybe.trim()) {
-    throw new Error(`Missing required env: ${name}`);
-  }
-  const raw = rawMaybe.trim().toLowerCase();
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  throw new Error(`Invalid boolean for ${name}: ${raw}`);
-}
-function optBool(name) {
-  const rawMaybe = optEnv(name);
-  if (rawMaybe === null) return null;
-  const raw = rawMaybe.toLowerCase();
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  throw new Error(`Invalid boolean for ${name}: ${raw}`);
-}
-function boolOrConstant(name, fallback) {
-  const value = optBool(name);
-  if (value !== null) return value;
-  return fallback;
-}
-function envOrConstant(name, fallback) {
-  const value = optEnv(name);
-  if (value !== null) return value;
-  return fallback;
-}
 function loadConfig() {
-  const runnerAllowNoToken = bool("KAI_RUNNER_ALLOW_NO_TOKEN");
-  const runnerToken = optEnv("RUNNER_TOKEN");
-  if (!runnerAllowNoToken && !runnerToken) {
-    throw new Error("RUNNER_TOKEN is required unless KAI_RUNNER_ALLOW_NO_TOKEN=true");
-  }
   return {
-    runtimeEnv: process.env,
-    reposPath: optEnv("KAI_REPOS_PATH"),
     routerUrl: optEnv("KAI_ROUTER_URL"),
-    compressorUrl: optEnv("KAI_COMPRESSOR_URL"),
-    compressorDisabled: optBool("KAI_COMPRESSOR_DISABLE"),
     auditDbPath: env("KAI_AUDIT_DB"),
-    compressorTimeoutMs: COMPRESSOR_TIMEOUT_MS,
-    compressorMinQueryTokens: COMPRESSOR_MIN_QUERY_TOKENS,
-    compressorMinPromptTokens: COMPRESSOR_MIN_PROMPT_TOKENS,
-    compressorBudgetHaiku: COMPRESSOR_BUDGET_HAIKU,
-    compressorBudgetSonnet: COMPRESSOR_BUDGET_SONNET,
-    compressorBudgetOpus: COMPRESSOR_BUDGET_OPUS,
-    runnerAllowNoToken,
-    runnerToken,
-    routerGitContext: env("KAI_ROUTER_GIT_CONTEXT"),
-    claudeSettingsPath: envOrConstant("KAI_CLAUDE_SETTINGS_PATH", DEFAULT_CLAUDE_SETTINGS_PATH),
-    rtkHookSkipCheck: boolOrConstant("KAI_RTK_HOOK_SKIP_CHECK", DEFAULT_RTK_HOOK_SKIP_CHECK),
-    tierSuggestDisabled: boolOrConstant("KAI_TIER_SUGGEST_DISABLE", DEFAULT_TIER_SUGGEST_DISABLE),
-    debugCompressor: boolOrConstant("KAI_DEBUG_COMPRESSOR", DEFAULT_DEBUG_COMPRESSOR),
     routerTimeoutMs: ROUTER_TIMEOUT_MS,
     logLevel: parseLogLevel(env("KAI_LOG_LEVEL"))
   };
