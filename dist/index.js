@@ -27916,6 +27916,10 @@ function initAuditDb(dbPath) {
       sender TEXT NOT NULL,
       repo TEXT NOT NULL,
       pr_number INTEGER NOT NULL,
+      event_name TEXT NOT NULL DEFAULT 'unknown',
+      thread_kind TEXT NOT NULL DEFAULT 'unknown',
+      thread_id INTEGER,
+      comment_id INTEGER,
       model TEXT NOT NULL,
       message TEXT,
       duration_ms INTEGER,
@@ -27931,6 +27935,9 @@ function initAuditDb(dbPath) {
       run_id TEXT UNIQUE NOT NULL,
       repo TEXT NOT NULL,
       pr_number INTEGER NOT NULL,
+      event_name TEXT NOT NULL DEFAULT 'unknown',
+      thread_kind TEXT NOT NULL DEFAULT 'unknown',
+      thread_id INTEGER,
       sender TEXT NOT NULL,
       comment_id INTEGER NOT NULL,
       reply_comment_id INTEGER,
@@ -27948,6 +27955,9 @@ function initAuditDb(dbPath) {
       timestamp TEXT NOT NULL DEFAULT (datetime('now')),
       repo TEXT NOT NULL,
       pr_number INTEGER NOT NULL,
+      event_name TEXT NOT NULL DEFAULT 'unknown',
+      thread_kind TEXT NOT NULL DEFAULT 'unknown',
+      thread_id INTEGER,
       comment_id INTEGER NOT NULL,
       sender TEXT NOT NULL,
       intent TEXT NOT NULL,
@@ -27969,7 +27979,28 @@ function initAuditDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_rate_limits_sender_ts ON rate_limits(sender, timestamp);
     CREATE INDEX IF NOT EXISTS idx_rate_limits_repo_ts ON rate_limits(repo, timestamp)
   `);
+  ensureColumn(db, "audit_log", "event_name", "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, "audit_log", "thread_kind", "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, "audit_log", "thread_id", "INTEGER");
+  ensureColumn(db, "audit_log", "comment_id", "INTEGER");
+  ensureColumn(db, "sessions", "event_name", "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, "sessions", "thread_kind", "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, "sessions", "thread_id", "INTEGER");
+  ensureColumn(db, "router_decisions", "event_name", "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, "router_decisions", "thread_kind", "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, "router_decisions", "thread_id", "INTEGER");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_audit_thread ON audit_log(repo, thread_kind, thread_id, comment_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(repo, thread_kind, thread_id, comment_id);
+    CREATE INDEX IF NOT EXISTS idx_router_decisions_thread ON router_decisions(repo, thread_kind, thread_id, comment_id);
+  `);
   return db;
+}
+function ensureColumn(db, table, column, definition) {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!rows.some((row) => row.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 function checkRateLimit(db, sender, repoFull, options = {}) {
   const senderPerHour = DEFAULT_RATE_LIMIT_SENDER_PER_HOUR;
@@ -28015,12 +28046,16 @@ function recordRateLimit(db, sender, repoFull, tier, costUsd) {
 function auditLog(db, data) {
   try {
     db.prepare(`
-      INSERT INTO audit_log (sender, repo, pr_number, model, message, duration_ms, cost_usd, tokens_in, tokens_out, rtk_savings, status, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO audit_log (sender, repo, pr_number, event_name, thread_kind, thread_id, comment_id, model, message, duration_ms, cost_usd, tokens_in, tokens_out, rtk_savings, status, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.sender,
       data.repo,
       data.prNumber,
+      data.eventName ?? "unknown",
+      data.threadKind ?? "unknown",
+      data.threadId ?? null,
+      data.commentId ?? null,
       data.model,
       data.message ?? null,
       data.durationMs ?? null,
@@ -28038,11 +28073,14 @@ function auditLog(db, data) {
 function logRouterDecision(db, data) {
   try {
     db.prepare(`
-      INSERT INTO router_decisions (repo, pr_number, comment_id, sender, intent, decision, confidence, model_tier, estimated_tokens, estimated_cost_usd, reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO router_decisions (repo, pr_number, event_name, thread_kind, thread_id, comment_id, sender, intent, decision, confidence, model_tier, estimated_tokens, estimated_cost_usd, reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.repo,
       data.prNumber,
+      data.eventName ?? "unknown",
+      data.threadKind ?? "unknown",
+      data.threadId ?? null,
       data.commentId,
       data.sender,
       data.route.intent,
@@ -28055,6 +28093,45 @@ function logRouterDecision(db, data) {
     );
   } catch (e) {
     core.warning(`Router decision log failed: ${e}`);
+  }
+}
+function upsertSession(db, data) {
+  try {
+    db.prepare(`
+      INSERT INTO sessions (
+        run_id, repo, pr_number, event_name, thread_kind, thread_id, sender,
+        comment_id, reply_comment_id, model, phase, status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        repo = excluded.repo,
+        pr_number = excluded.pr_number,
+        event_name = excluded.event_name,
+        thread_kind = excluded.thread_kind,
+        thread_id = excluded.thread_id,
+        sender = excluded.sender,
+        comment_id = excluded.comment_id,
+        reply_comment_id = excluded.reply_comment_id,
+        model = excluded.model,
+        phase = excluded.phase,
+        status = excluded.status,
+        last_heartbeat = datetime('now')
+    `).run(
+      data.runId,
+      data.repo,
+      data.prNumber,
+      data.eventName,
+      data.threadKind,
+      data.threadId,
+      data.sender,
+      data.commentId,
+      data.replyCommentId ?? null,
+      data.model,
+      data.phase ?? "init",
+      data.status ?? "running"
+    );
+  } catch (e) {
+    core.warning(`Session upsert failed: ${e}`);
   }
 }
 
@@ -28136,11 +28213,8 @@ function parseLogLevel(raw) {
 
 // src/config.ts
 var ROUTER_TIMEOUT_MS = 5e3;
-function env(name) {
-  const value = process.env[name];
-  if (!value || !value.trim()) throw new Error(`Missing required env: ${name}`);
-  return value.trim();
-}
+var DEFAULT_AUDIT_DB = "/tmp/kai-audit.db";
+var DEFAULT_LOG_LEVEL = "info";
 function optEnv(name) {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : null;
@@ -28148,9 +28222,9 @@ function optEnv(name) {
 function loadConfig() {
   return {
     routerUrl: optEnv("KAI_ROUTER_URL"),
-    auditDbPath: env("KAI_AUDIT_DB"),
+    auditDbPath: optEnv("KAI_AUDIT_DB") ?? DEFAULT_AUDIT_DB,
     routerTimeoutMs: ROUTER_TIMEOUT_MS,
-    logLevel: parseLogLevel(env("KAI_LOG_LEVEL"))
+    logLevel: parseLogLevel(optEnv("KAI_LOG_LEVEL") ?? DEFAULT_LOG_LEVEL)
   };
 }
 
@@ -28197,7 +28271,8 @@ async function run() {
     const routerModel = LOCAL_LLM_MODEL;
     const { context: context2 } = github;
     const event = context2.eventName;
-    let commentBody = "", commentId = 0, issueNumber = 0;
+    let commentBody = "", commentId = 0, issueNumber = 0, threadId = 0;
+    let threadKind = "unknown";
     if (event === "issue_comment" || event === "pull_request_review_comment") {
       const payload = context2.payload;
       commentBody = payload.comment?.body ?? "";
@@ -28205,9 +28280,12 @@ async function run() {
       sender = payload.comment?.user?.login ?? "";
       if (event === "issue_comment") {
         issueNumber = payload.issue?.number ?? 0;
+        threadKind = payload.issue?.pull_request ? "pull_request" : "issue";
       } else {
         issueNumber = payload.pull_request?.number ?? 0;
+        threadKind = "pull_request_review_comment";
       }
+      threadId = issueNumber;
     }
     if (!commentBody.toLowerCase().includes(trigger.toLowerCase())) return;
     if (sender.includes("[bot]")) return;
@@ -28231,14 +28309,33 @@ async function run() {
       timeoutMs: cfg.routerTimeoutMs
     });
     core2.info(`Router decision: intent=${route.intent} decision=${route.decision} confidence=${route.confidence} reason="${route.reason}"`);
-    const runId = `${owner}/${repo}#${issueNumber}-${Date.now()}`;
+    const runId = `${context2.runId}-${context2.runAttempt}-${commentId}`;
     const startTime = Date.now();
+    const threadContext = {
+      eventName: event,
+      threadKind,
+      threadId,
+      commentId
+    };
+    upsertSession(auditDb, {
+      runId,
+      repo: `${owner}/${repo}`,
+      prNumber: issueNumber,
+      eventName: event,
+      threadKind,
+      threadId,
+      sender,
+      commentId,
+      model: routerModel,
+      phase: "routing",
+      status: "running"
+    });
     logRouterDecision(auditDb, {
       repo: `${owner}/${repo}`,
       prNumber: issueNumber,
-      commentId,
       sender,
-      route
+      route,
+      ...threadContext
     });
     auditLog(auditDb, {
       sender,
@@ -28246,7 +28343,8 @@ async function run() {
       prNumber: issueNumber,
       model: routerModel,
       message: rawMessage,
-      status: "started"
+      status: "started",
+      ...threadContext
     });
     if (route.decision === "stop") {
       try {
@@ -28263,7 +28361,21 @@ async function run() {
         costUsd: 0,
         tokensIn: 0,
         tokensOut: 0,
-        status: "cancelled"
+        status: "cancelled",
+        ...threadContext
+      });
+      upsertSession(auditDb, {
+        runId,
+        repo: `${owner}/${repo}`,
+        prNumber: issueNumber,
+        eventName: event,
+        threadKind,
+        threadId,
+        sender,
+        commentId,
+        model: routerModel,
+        phase: "cancelled",
+        status: "completed"
       });
       core2.info(`Stop handled by local router (${routerModel})`);
       return;
@@ -28298,7 +28410,22 @@ async function run() {
         tokensIn: 0,
         tokensOut: 0,
         status: "rate-limited",
-        error: rateLimit.reason
+        error: rateLimit.reason,
+        ...threadContext
+      });
+      upsertSession(auditDb, {
+        runId,
+        repo: `${owner}/${repo}`,
+        prNumber: issueNumber,
+        eventName: event,
+        threadKind,
+        threadId,
+        sender,
+        commentId,
+        replyCommentId: rlReply.id,
+        model: routerModel,
+        phase: "rate-limited",
+        status: "completed"
       });
       core2.warning(`Rate-limited @${sender}: ${rateLimit.reason}`);
       return;
@@ -28328,7 +28455,22 @@ ${template}
         costUsd: 0,
         tokensIn: 0,
         tokensOut: 0,
-        status: "needs-input"
+        status: "needs-input",
+        ...threadContext
+      });
+      upsertSession(auditDb, {
+        runId,
+        repo: `${owner}/${repo}`,
+        prNumber: issueNumber,
+        eventName: event,
+        threadKind,
+        threadId,
+        sender,
+        commentId,
+        replyCommentId: reply2.id,
+        model: routerModel,
+        phase: "needs-input",
+        status: "completed"
       });
       core2.info(`Clarification requested by local router (${routerModel})`);
       return;
@@ -28358,6 +28500,21 @@ ${template}
         costUsd: 0,
         tokensIn: 0,
         tokensOut: 0,
+        status: "completed",
+        ...threadContext
+      });
+      upsertSession(auditDb, {
+        runId,
+        repo: `${owner}/${repo}`,
+        prNumber: issueNumber,
+        eventName: event,
+        threadKind,
+        threadId,
+        sender,
+        commentId,
+        replyCommentId: reply2.id,
+        model: routerModel,
+        phase: "responded",
         status: "completed"
       });
       recordRateLimit(auditDb, sender, `${owner}/${repo}`, "local-template", 0);
@@ -28396,7 +28553,22 @@ OpenHands integration is pending. This request has been logged.
       costUsd: 0,
       tokensIn: 0,
       tokensOut: 0,
-      status: "accepted-pending-openhands"
+      status: "accepted-pending-openhands",
+      ...threadContext
+    });
+    upsertSession(auditDb, {
+      runId,
+      repo: `${owner}/${repo}`,
+      prNumber: issueNumber,
+      eventName: event,
+      threadKind,
+      threadId,
+      sender,
+      commentId,
+      replyCommentId,
+      model: routerModel,
+      phase: "accepted",
+      status: "completed"
     });
     recordRateLimit(auditDb, sender, `${owner}/${repo}`, "pending", 0);
     core2.info("Done");

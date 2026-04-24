@@ -8,6 +8,8 @@ export type Config = {
 };
 
 const ROUTER_TIMEOUT_MS = 5_000;
+const DEFAULT_AUDIT_DB = "/tmp/kai-audit.db";
+const DEFAULT_LOG_LEVEL = "info";
 
 function env(name: string): string {
   const value = process.env[name];
@@ -23,8 +25,8 @@ function optEnv(name: string): string | null {
 export function loadConfig(): Config {
   return {
     routerUrl: optEnv("KAI_ROUTER_URL"),
-    auditDbPath: env("KAI_AUDIT_DB"),
+    auditDbPath: optEnv("KAI_AUDIT_DB") ?? DEFAULT_AUDIT_DB,
     routerTimeoutMs: ROUTER_TIMEOUT_MS,
-    logLevel: parseLogLevel(env("KAI_LOG_LEVEL")),
+    logLevel: parseLogLevel(optEnv("KAI_LOG_LEVEL") ?? DEFAULT_LOG_LEVEL),
   };
 }

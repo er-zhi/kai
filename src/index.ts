@@ -4,7 +4,7 @@ import { Octokit } from "@octokit/rest";
 import { DatabaseSync } from "node:sqlite";
 import { routeEventWithLocalLLM, type RouterDecision } from "./router";
 import { templateForRoute } from "./templates";
-import { initAuditDb, checkRateLimit, recordRateLimit, auditLog, logRouterDecision } from "./audit";
+import { initAuditDb, checkRateLimit, recordRateLimit, auditLog, logRouterDecision, upsertSession } from "./audit";
 import { loadConfig } from "./config";
 import { createLogger, errorMeta } from "./log";
 
@@ -61,7 +61,8 @@ async function run() {
     const { context } = github;
     const event = context.eventName;
 
-    let commentBody = "", commentId = 0, issueNumber = 0;
+    let commentBody = "", commentId = 0, issueNumber = 0, threadId = 0;
+    let threadKind = "unknown";
 
     if (event === "issue_comment" || event === "pull_request_review_comment") {
       const payload = context.payload;
@@ -70,9 +71,12 @@ async function run() {
       sender = payload.comment?.user?.login ?? "";
       if (event === "issue_comment") {
         issueNumber = payload.issue?.number ?? 0;
+        threadKind = payload.issue?.pull_request ? "pull_request" : "issue";
       } else {
         issueNumber = payload.pull_request?.number ?? 0;
+        threadKind = "pull_request_review_comment";
       }
+      threadId = issueNumber;
     }
 
     if (!commentBody.toLowerCase().includes(trigger.toLowerCase())) return;
@@ -104,15 +108,34 @@ async function run() {
 
     core.info(`Router decision: intent=${route.intent} decision=${route.decision} confidence=${route.confidence} reason="${route.reason}"`);
 
-    const runId = `${owner}/${repo}#${issueNumber}-${Date.now()}`;
+    const runId = `${context.runId}-${context.runAttempt}-${commentId}`;
     const startTime = Date.now();
+    const threadContext = {
+      eventName: event,
+      threadKind,
+      threadId,
+      commentId,
+    };
+    upsertSession(auditDb, {
+      runId,
+      repo: `${owner}/${repo}`,
+      prNumber: issueNumber,
+      eventName: event,
+      threadKind,
+      threadId,
+      sender,
+      commentId,
+      model: routerModel,
+      phase: "routing",
+      status: "running",
+    });
     logRouterDecision(auditDb, {
-      repo: `${owner}/${repo}`, prNumber: issueNumber, commentId, sender, route,
+      repo: `${owner}/${repo}`, prNumber: issueNumber, sender, route, ...threadContext,
     });
 
     auditLog(auditDb, {
       sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
-      model: routerModel, message: rawMessage, status: "started",
+      model: routerModel, message: rawMessage, status: "started", ...threadContext,
     });
 
     if (route.decision === "stop") {
@@ -122,7 +145,12 @@ async function run() {
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
         model: routerModel, message: rawMessage, durationMs: Date.now() - startTime,
-        costUsd: 0, tokensIn: 0, tokensOut: 0, status: "cancelled",
+        costUsd: 0, tokensIn: 0, tokensOut: 0, status: "cancelled", ...threadContext,
+      });
+      upsertSession(auditDb, {
+        runId, repo: `${owner}/${repo}`, prNumber: issueNumber, eventName: event,
+        threadKind, threadId, sender, commentId, model: routerModel,
+        phase: "cancelled", status: "completed",
       });
       core.info(`Stop handled by local router (${routerModel})`);
       return;
@@ -143,7 +171,12 @@ async function run() {
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
         model: routerModel, message: rawMessage, durationMs: Date.now() - startTime,
-        costUsd: 0, tokensIn: 0, tokensOut: 0, status: "rate-limited", error: rateLimit.reason,
+        costUsd: 0, tokensIn: 0, tokensOut: 0, status: "rate-limited", error: rateLimit.reason, ...threadContext,
+      });
+      upsertSession(auditDb, {
+        runId, repo: `${owner}/${repo}`, prNumber: issueNumber, eventName: event,
+        threadKind, threadId, sender, commentId, replyCommentId: rlReply.id,
+        model: routerModel, phase: "rate-limited", status: "completed",
       });
       core.warning(`Rate-limited @${sender}: ${rateLimit.reason}`);
       return;
@@ -160,7 +193,12 @@ async function run() {
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
         model: routerModel, message: rawMessage, durationMs: Date.now() - startTime,
-        costUsd: 0, tokensIn: 0, tokensOut: 0, status: "needs-input",
+        costUsd: 0, tokensIn: 0, tokensOut: 0, status: "needs-input", ...threadContext,
+      });
+      upsertSession(auditDb, {
+        runId, repo: `${owner}/${repo}`, prNumber: issueNumber, eventName: event,
+        threadKind, threadId, sender, commentId, replyCommentId: reply.id,
+        model: routerModel, phase: "needs-input", status: "completed",
       });
       core.info(`Clarification requested by local router (${routerModel})`);
       return;
@@ -177,7 +215,12 @@ async function run() {
       auditLog(auditDb, {
         sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
         model: routerModel, message: rawMessage, durationMs: Date.now() - startTime,
-        costUsd: 0, tokensIn: 0, tokensOut: 0, status: "completed",
+        costUsd: 0, tokensIn: 0, tokensOut: 0, status: "completed", ...threadContext,
+      });
+      upsertSession(auditDb, {
+        runId, repo: `${owner}/${repo}`, prNumber: issueNumber, eventName: event,
+        threadKind, threadId, sender, commentId, replyCommentId: reply.id,
+        model: routerModel, phase: "responded", status: "completed",
       });
       recordRateLimit(auditDb, sender, `${owner}/${repo}`, "local-template", 0);
       core.info(`Template reply by local router (${routerModel})`);
@@ -203,7 +246,12 @@ async function run() {
     auditLog(auditDb, {
       sender, repo: `${owner}/${repo}`, prNumber: issueNumber,
       model: routerModel, message: rawMessage, durationMs: Date.now() - startTime,
-      costUsd: 0, tokensIn: 0, tokensOut: 0, status: "accepted-pending-openhands",
+      costUsd: 0, tokensIn: 0, tokensOut: 0, status: "accepted-pending-openhands", ...threadContext,
+    });
+    upsertSession(auditDb, {
+      runId, repo: `${owner}/${repo}`, prNumber: issueNumber, eventName: event,
+      threadKind, threadId, sender, commentId, replyCommentId,
+      model: routerModel, phase: "accepted", status: "completed",
     });
     recordRateLimit(auditDb, sender, `${owner}/${repo}`, "pending", 0);
     core.info("Done");
